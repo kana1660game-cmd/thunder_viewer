@@ -25,37 +25,8 @@ Electron 版（`../lightning-monitor`）をベースに、Node バックエン�
 
 ローカル検証では受信・解析・地名取得すべて正常動作を確認済みです。
 
-## GitHub Pages へのデプロイ手順
+開できます。
 
-1. GitHub で新しいリポジトリを作成（例: `lightning-monitor`）。
-2. **このフォルダ（`github_io/`）の中身**をリポジトリ直下に置いて push します。
-
-   ```bash
-   cd github_io
-   git init
-   git add .
-   git commit -m "Lightning Monitor (web)"
-   git branch -M main
-   git remote add origin https://github.com/<ユーザー名>/<リポジトリ名>.git
-   git push -u origin main
-   ```
-
-3. リポジトリの **Settings → Pages** を開く。
-4. *Build and deployment* の *Source* を **Deploy from a branch** にし、
-   Branch を **`main` / `(root)`** に設定して Save。
-5. 数十秒〜数分後、`https://<ユーザー名>.github.io/<リポジトリ名>/` で公開されます。
-
-> ユーザーサイトとして公開したい場合は、リポジトリ名を `<ユーザー名>.github.io` にすると
-> `https://<ユーザー名>.github.io/` で直接公開できます。
-
-## ローカルでの動作確認
-
-`file://` では一部ブラウザが WebSocket/fetch を制限するため、簡易サーバー経由で開いてください。
-
-```bash
-cd github_io
-npx http-server -p 8099 -c-1
-# → http://localhost:8099 をブラウザで開く
 ```
 
 ## 利用規約について
