@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>⚡ Lightning Monitor</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- ヘッダー -->
+  <header class="app-header">
+    <div class="header-left">
+      <span class="app-logo">⚡</span>
+      <span class="app-title">Lightning Monitor</span>
+      <span class="conn-badge" id="connBadge">● 接続中...</span>
+    </div>
+    <div class="header-right">
+      <div class="stat-chip" id="statApi">受信 <b>—</b> / 解析 <b>—</b></div>
+      <div class="stat-chip" id="statJapan">🗾 <b>—</b></div>
+      <div class="stat-chip" id="statTotal">本日(監視) <b>—</b></div>
+      <div class="stat-chip" id="statRecent">直近 <b>—</b></div>
+      <button class="icon-btn" id="btnCamera" title="カメラ追従 ON">📷</button>
+      <button class="icon-btn" id="btnStats" title="統計">📊</button>
+      <button class="icon-btn" id="btnSettings" title="設定">⚙️</button>
+    </div>
+  </header>
+
+  <!-- メインレイアウト -->
+  <div class="main-layout">
+    <!-- 地図 -->
+    <div class="map-wrap">
+      <div id="map"></div>
+      <!-- 時間フィルターバー -->
+      <div class="filter-bar">
+        <button class="filter-btn active" data-filter="0">すべて</button>
+        <button class="filter-btn" data-filter="60">直近1分</button>
+        <button class="filter-btn" data-filter="300">直近5分</button>
+        <button class="filter-btn" data-filter="1800">直近30分</button>
+        <button class="filter-btn" data-filter="3600">直近1時間</button>
+        <button class="filter-btn" data-filter="21600">直近6時間</button>
+        <button class="filter-btn" data-filter="86400">直近24時間</button>
+      </div>
+      <div id="soundPanel" class="sound-arrival-panel"></div>
+      <div class="ring-legend">
+        <div class="ring-legend-item"><span class="dot dot-warn"></span>音到達前（警告圏内）</div>
+        <div class="ring-legend-item"><span class="dot dot-safe"></span>到達済み / 監視圏外</div>
+      </div>
+    </div>
+
+    <!-- サイドパネル -->
+    <aside class="side-panel">
+      <div class="panel-section">
+        <div class="section-title">⚡ 落雷履歴（監視圏内）</div>
+        <div class="history-list" id="historyList">
+          <div class="history-empty">データ待機中...</div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 統計モーダル -->
+  <div class="modal-overlay" id="statsModal">
+    <div class="modal">
+      <div class="modal-header">
+        <span>📊 落雷統計</span>
+        <button class="close-btn" id="closeStats">✕</button>
+      </div>
+      <div class="modal-body" id="statsBody">
+        <div class="stats-grid" id="statsGrid"></div>
+        <canvas id="statsChart" width="480" height="200"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- 設定モーダル -->
+  <div class="modal-overlay" id="settingsModal">
+    <div class="modal">
+      <div class="modal-header">
+        <span>⚙️ 設定</span>
+        <button class="close-btn" id="closeSettings">✕</button>
+      </div>
+      <div class="modal-body">
+
+        <!-- 監視地点 -->
+        <div class="setting-section-label">監視地点</div>
+        <div class="setting-group">
+          <label>監視地点名</label>
+          <input type="text" id="cfgName" placeholder="例: 自宅" />
+        </div>
+        <div class="setting-row">
+          <div class="setting-group">
+            <label>緯度</label>
+            <input type="number" id="cfgLat" step="0.0001" placeholder="例: 35.8617" />
+          </div>
+          <div class="setting-group">
+            <label>経度</label>
+            <input type="number" id="cfgLon" step="0.0001" placeholder="例: 139.9650" />
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-group">
+            <label>音到達警告距離 (km)</label>
+            <input type="number" id="cfgRadius" min="1" max="100" placeholder="例: 20" />
+          </div>
+          <div class="setting-group">
+            <label>監視エリア半径 (km)</label>
+            <input type="number" id="cfgMonitorRadius" min="10" max="500" placeholder="例: 150" />
+          </div>
+        </div>
+
+        <!-- 表示 -->
+        <div class="setting-section-label">表示</div>
+        <div class="setting-row">
+          <div class="setting-group">
+            <label>落雷点の色</label>
+            <select id="cfgDotColor">
+              <option value="blue">青 (Blue)</option>
+              <option value="yellow">黄 (Yellow)</option>
+            </select>
+          </div>
+          <div class="setting-group">
+            <label>アニメーション FPS</label>
+            <select id="cfgFps">
+              <option value="5">5 fps（最軽量）</option>
+              <option value="10">10 fps（推奨）</option>
+              <option value="15">15 fps</option>
+              <option value="20">20 fps</option>
+              <option value="30">30 fps（高負荷）</option>
+            </select>
+          </div>
+        </div>
+        <div class="setting-group">
+          <label>監視圏の円を表示</label>
+          <label class="setting-check">
+            <input type="checkbox" id="cfgShowRing" />
+            <span>警告半径の円をマップ上に表示する</span>
+          </label>
+        </div>
+        <div class="setting-group">
+          <label>落雷演出（波紋エフェクト）を表示</label>
+          <label class="setting-check">
+            <input type="checkbox" id="cfgShowRipple" />
+            <span>落雷発生時に拡散する波紋リングを表示する</span>
+          </label>
+        </div>
+        <div class="setting-group">
+          <label>発生アニメーションを監視圏外にも表示</label>
+          <label class="setting-check">
+            <input type="checkbox" id="cfgRippleFar" />
+            <span>監視圏外の落雷にも canvas 波紋アニメーションを表示する（高負荷注意）</span>
+          </label>
+        </div>
+        <div class="setting-group">
+          <label>音の伝播円を監視圏外にも表示</label>
+          <label class="setting-check">
+            <input type="checkbox" id="cfgSoundRingFar" />
+            <span>監視圏外の落雷にも音波の伝播を示す拡散円を表示する</span>
+          </label>
+        </div>
+        <div class="setting-group">
+          <label>監視圏外の落雷も履歴に表示</label>
+          <label class="setting-check">
+            <input type="checkbox" id="cfgShowFarHistory" />
+            <span>日本全体（監視圏外）の落雷を履歴パネルに含める</span>
+          </label>
+        </div>
+        <div class="setting-group">
+          <label>カメラ追従を監視圏外にも適用</label>
+          <label class="setting-check">
+            <input type="checkbox" id="cfgCameraFar" />
+            <span>日本全体（監視圏外）の落雷発生時もカメラを移動する</span>
+          </label>
+        </div>
+
+        <!-- 表示件数・時間 -->
+        <div class="setting-section-label">表示件数・時間</div>
+        <div class="setting-row">
+          <div class="setting-group">
+            <label>履歴パネル表示件数</label>
+            <input type="number" id="cfgHistoryDisplayCount" min="5" max="500" placeholder="例: 50" />
+          </div>
+          <div class="setting-group">
+            <label>マップ表示件数上限</label>
+            <input type="number" id="cfgMapDisplayCount" min="50" max="5000" placeholder="例: 500" />
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-group">
+            <label>マップ自動消去（秒、0=無効）</label>
+            <input type="number" id="cfgMapDisplaySec" min="0" placeholder="例: 3600" />
+          </div>
+          <div class="setting-group">
+            <label>統計対象時間 (時間)</label>
+            <input type="number" id="cfgHours" min="1" max="72" placeholder="例: 6" />
+          </div>
+        </div>
+
+        <!-- 保存 -->
+        <div class="setting-section-label">保存</div>
+        <div class="setting-group">
+          <label>履歴保持件数（日本全体含む）</label>
+          <input type="number" id="cfgMaxHistory" min="100" max="5000" placeholder="例: 500" />
+        </div>
+
+        <button class="save-btn" id="saveSettings">保存して適用</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
