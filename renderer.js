@@ -19,6 +19,7 @@ const DEFAULT_CONFIG = {
   showFarHistory: false,
   dotColor: 'blue',
   autoCamera: true,
+  cameraLock: false,   // ON の間はカメラの自動移動を完全に停止（追従設定より優先）
   cameraFar: false,
   historyDisplayCount: 50,
   mapDisplaySec: 0,
@@ -57,13 +58,52 @@ const ANIM_SCALE    = 260;   // ms: 本体ポップイン持続
 const ANIM_LIFE     = 1400;  // ms: 総寿命
 const TWO_PI = Math.PI * 2;
 
+// 波紋canvasの描画を間引く上限FPS（高リフレッシュレート環境での負荷軽減）
+const RIPPLE_MIN_INTERVAL = 1000 / 30;
+let _lastRippleDrawTs = 0;
+
 // カメラ制御
 let lastAutoFlyMs = 0;
 let urgentCameraActive = false;
 let _urgentStrikeId = null;
 const AUTO_FLY_COOLDOWN_MS = 3000;
 
+// 手動でマップを操作した直後はこの時間だけ自動カメラ移動を抑止する
+let lastUserInteractMs = 0;
+const MANUAL_HOLD_MS = 5000;
+function isManualHold() { return Date.now() - lastUserInteractMs < MANUAL_HOLD_MS; }
+
 const SOUND_SPEED = 340;
+
+// 距離 distKm における雷の推定音量 (dB SPL) を返す。
+// モデル: 雷の音源は1km地点で約120dB SPL を基準とし、
+//   - 距離の逆二乗則による減衰: -20*log10(d/1)
+//   - 大気吸収（1kHz帯域で約0.003dB/m = 3dB/km の追加減衰）
+// を合算する。結果が0以下（ほぼ聞こえない）なら0を返す。
+// 基準: 120dB = ジェットエンジン直近。会話は60dB、ヒソヒソ声30dB。
+function calcThunderDb(distKm) {
+  if (!distKm || distKm <= 0) return 0;
+  const REF_DB     = 120;                          // 1km基準音量 (dB)
+  const ATM_DB_KM  = 3;                            // 大気吸収 (dB/km)
+  const invSqLoss  = 20 * Math.log10(distKm);     // 逆二乗減衰
+  const atmLoss    = ATM_DB_KM * (distKm - 1);    // 大気吸収（1kmからの追加分）
+  return Math.max(0, REF_DB - invSqLoss - atmLoss);
+}
+
+// dB値をわかりやすい言葉に変換する（大まかな目安）
+function dbToLabel(db) {
+  if (db >= 100) return '非常に大きい（ジェット機 直近レベル）';
+  if (db >= 90)  return '非常に大きい（工事現場 間近）';
+  if (db >= 80)  return '大きい（地下鉄車内 レベル）';
+  if (db >= 70)  return '大きい（掃除機 間近）';
+  if (db >= 60)  return 'やや大きい（会話レベル）';
+  if (db >= 50)  return '普通（静かな事務所）';
+  if (db >= 40)  return '小さい（図書館レベル）';
+  if (db >= 30)  return '小さい（ヒソヒソ声レベル）';
+  if (db >= 20)  return 'かすかに聞こえる';
+  if (db > 0)    return 'ほぼ聞こえない';
+  return '聞こえない';
+}
 const STRIKES_STORAGE_KEY = 'lm_strikes_v2';
 
 // ══════════════════════════════════════════════════════════════
@@ -315,7 +355,9 @@ function restoreStoredStrikes() {
 
 // カメラを向ける（クールダウン付き）
 function tryAutoCamera(strike) {
+  if (cfg.cameraLock) return;   // カメラ固定レバーON：自動移動しない
   if (!cfg.autoCamera) return;
+  if (isManualHold()) return;   // 手動操作直後はカメラを動かさない
   if (urgentCameraActive) return;
   const now = Date.now();
   if (now - lastAutoFlyMs < AUTO_FLY_COOLDOWN_MS) return;
@@ -336,7 +378,8 @@ function tryAutoCamera(strike) {
 
 // 音到達10秒以内の落雷があれば、落雷と監視地点を両方映す
 function checkUrgentCamera() {
-  if (!cfg.autoCamera || !map) return;
+  if (cfg.cameraLock || !cfg.autoCamera || !map) return;   // 固定レバーON：自動移動しない
+  if (isManualHold()) return;   // 手動操作直後はカメラを動かさない
   const now = Date.now();
   const urgent = strikes.filter(s => {
     if (s.isHistorical || s.isFar) return false;
@@ -374,6 +417,17 @@ function updateCameraBtn() {
   btn.title = cfg.autoCamera ? 'カメラ追従 ON' : 'カメラ追従 OFF';
 }
 
+// カメラ固定レバーの表示更新
+function updateCameraLockLever() {
+  const lever = document.getElementById('leverCameraLock');
+  if (!lever) return;
+  lever.classList.toggle('locked', !!cfg.cameraLock);
+  lever.setAttribute('aria-checked', cfg.cameraLock ? 'true' : 'false');
+  lever.title = cfg.cameraLock
+    ? 'カメラ固定：ON（カメラは自動移動しません）'
+    : 'カメラ固定：OFF（タップで固定）';
+}
+
 // ══════════════════════════════════════════════════════════════
 //  地図
 // ══════════════════════════════════════════════════════════════
@@ -393,7 +447,20 @@ function initMap() {
   placeMonitorMarker();
   drawSoundRing();
   map.on('zoomend', placeMonitorMarker);
+  setupManualInteractionTracking();
   initAnimCanvas();
+}
+
+// ユーザーがマップを直接操作したことを検知して時刻を記録する。
+// これらの入力イベントはプログラムによる flyTo/fitBounds では発火しないため、
+// 自動カメラ移動と確実に区別できる。
+function setupManualInteractionTracking() {
+  const container = map.getContainer();
+  const mark = () => { lastUserInteractMs = Date.now(); };
+  container.addEventListener('mousedown', mark);              // ドラッグ開始・ズームボタン
+  container.addEventListener('wheel', mark, { passive: true }); // ホイールズーム
+  container.addEventListener('touchstart', mark, { passive: true }); // タッチ操作
+  container.addEventListener('keydown', mark);               // 矢印キーでのパン
 }
 
 function placeMonitorMarker() {
@@ -408,8 +475,7 @@ function placeMonitorMarker() {
     iconSize: [size, size], iconAnchor: [half, half],
   });
   monitorMarker = L.marker([cfg.lat, cfg.lon], { icon, zIndexOffset: 1000 })
-    .addTo(map)
-    .bindTooltip(cfg.name, { permanent: true, direction: 'right', offset: [half + 2, 0] });
+    .addTo(map);
 }
 
 function drawSoundRing() {
@@ -475,7 +541,9 @@ function renderStrikeOnMap(strike, isHistory) {
     interactive,
   });
 
-  dot.bindPopup(buildPopupHTML(strike));
+  // ポップアップHTMLは開かれた時に初めて生成する（遅延バインド）。
+  // 大量の落雷点で毎回HTML文字列を作るコストを省く（クリックされなければ生成しない）。
+  dot.bindPopup(() => buildPopupHTML(strike));
 
   strike.mapLayer = dot;
   if (show) dot.addTo(map);
@@ -513,6 +581,10 @@ function buildPopupHTML(s) {
     <div class="popup-row">🕐 発生: <b>${fmtDateTime(s.strikeTime)}</b></div>
     <div class="popup-row">📏 距離: <b>${s.dist.toFixed(1)} km</b></div>
     <div class="popup-row">🔊 音到達: <b>${arrived ? '到達済み' : fmtTime(s.arrivalTime) + '（あと' + fmtSec(remainSec) + '）'}</b></div>
+    ${s.isWarn ? (() => {
+      const db = calcThunderDb(s.dist);
+      return `<div class="popup-row">📢 推定音量: <b>${db.toFixed(0)} dB</b> <span class="popup-vol-label">${dbToLabel(db)}</span></div>`;
+    })() : ''}
   `;
 }
 
@@ -548,6 +620,13 @@ function showRipple(lat, lon, isWarn) {
 }
 
 function renderAnimCanvas(now) {
+  // 30fps に間引く（演出は十分滑らかなまま描画コストを抑える）
+  if (now - _lastRippleDrawTs < RIPPLE_MIN_INTERVAL && activeAnimations.length > 0) {
+    animRafId = requestAnimationFrame(renderAnimCanvas);
+    return;
+  }
+  _lastRippleDrawTs = now;
+
   // 寿命切れを swap-delete で除去
   let i = 0;
   while (i < activeAnimations.length) {
@@ -875,7 +954,11 @@ function updateSoundPanel() {
     const name = s.place !== '取得中...'
       ? `#${s.id} ${s.place}${s.pref ? ' ' + s.pref : ''}`
       : `#${s.id} (${s.dist.toFixed(1)}km)`;
-    return `<div class="sap-item"><div class="sap-name">${name}</div>${countdownHtml}</div>`;
+    const db = calcThunderDb(s.dist);
+    const volHtml = s.isWarn
+      ? `<div class="sap-vol">${db.toFixed(0)} dB — ${dbToLabel(db)}</div>`
+      : '';
+    return `<div class="sap-item"><div class="sap-name">${name}</div>${countdownHtml}${volHtml}</div>`;
   }).join('');
 
   panel.innerHTML = `<div class="sap-title">▸ 音波到達</div>${items}`;
@@ -1070,6 +1153,14 @@ document.addEventListener('DOMContentLoaded', () => {
     updateCameraBtn();
   });
   updateCameraBtn();
+
+  // カメラ固定レバー（ON の間はカメラを自動移動しない）
+  document.getElementById('leverCameraLock').addEventListener('click', () => {
+    cfg.cameraLock = !cfg.cameraLock;
+    saveConfig();
+    updateCameraLockLever();
+  });
+  updateCameraLockLever();
 
   // 監視地点が未設定なら、初回起動時に設定モーダルを自動で開いて入力を促す
   if (!hasLocation()) openSettings();

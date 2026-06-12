@@ -89,6 +89,48 @@ html, body {
 .icon-btn.active { background: var(--blue); border-color: var(--blue); color: #fff; }
 .icon-btn.active:hover { background: #3a8eef; border-color: #3a8eef; }
 
+/* ── カメラ固定レバー（トグルスイッチ） ───────────────────────── */
+.lever-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 9px;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+.lever-switch:hover { border-color: var(--accent2); }
+.lever-label { line-height: 1; white-space: nowrap; }
+.lever-track {
+  position: relative;
+  width: 34px;
+  height: 16px;
+  border-radius: 16px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  transition: background 0.2s, border-color 0.2s;
+  flex-shrink: 0;
+}
+.lever-knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: transform 0.2s, background 0.2s;
+}
+/* ON（固定中） */
+.lever-switch.locked { color: var(--accent2); border-color: var(--accent2); background: #ff6b3522; }
+.lever-switch.locked .lever-track { background: #ff6b3544; border-color: var(--accent2); }
+.lever-switch.locked .lever-knob { transform: translateX(18px); background: var(--accent2); }
+
 /* ── メインレイアウト ────────────────────────────────────────── */
 .main-layout {
   display: flex;
@@ -302,6 +344,12 @@ html, body {
 }
 .sap-countdown.arrived {
   color: #4e6080;
+}
+.sap-vol {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  opacity: 0.85;
 }
 
 /* ── モーダル ────────────────────────────────────────────────── */
@@ -570,3 +618,4 @@ html, body {
 .popup-title { font-weight: 700; color: var(--accent); margin-bottom: 4px; }
 .popup-row { color: var(--text-dim); }
 .popup-row b { color: var(--text); }
+.popup-vol-label { font-size: 10px; color: var(--text-dim); }

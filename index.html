@@ -20,6 +20,11 @@
       <div class="stat-chip" id="statJapan">🗾 <b>—</b></div>
       <div class="stat-chip" id="statTotal">本日(監視) <b>—</b></div>
       <div class="stat-chip" id="statRecent">直近 <b>—</b></div>
+      <button class="lever-switch" id="leverCameraLock" role="switch" aria-checked="false"
+              title="カメラ固定：ONの間はカメラを自動移動しません">
+        <span class="lever-label">カメラ固定</span>
+        <span class="lever-track"><span class="lever-knob"></span></span>
+      </button>
       <button class="icon-btn" id="btnCamera" title="カメラ追従 ON">📷</button>
       <button class="icon-btn" id="btnStats" title="統計">📊</button>
       <button class="icon-btn" id="btnSettings" title="設定">⚙️</button>
@@ -91,11 +96,11 @@
         <div class="setting-row">
           <div class="setting-group">
             <label>緯度</label>
-            <input type="number" id="cfgLat" step="0.0001" placeholder="例: 35.8617" />
+            <input type="number" id="cfgLat" step="0.0001" placeholder="例: 35.0000" />
           </div>
           <div class="setting-group">
             <label>経度</label>
-            <input type="number" id="cfgLon" step="0.0001" placeholder="例: 139.9650" />
+            <input type="number" id="cfgLon" step="0.0001" placeholder="例: 135.0000" />
           </div>
         </div>
         <div class="setting-row">
