@@ -40,6 +40,17 @@ function hasLocation() {
       && typeof cfg.lon === 'number' && isFinite(cfg.lon);
 }
 
+// 自宅（監視地点）座標は専用キーにも保存してあるので、
+// 設定が未保存・破損していてもここで復元する。
+(function restoreHomeLocation() {
+  if (hasLocation()) return;
+  const home = loadHome();
+  if (!home) return;
+  cfg.lat = home.lat;
+  cfg.lon = home.lon;
+  if (home.name) cfg.name = home.name;
+})();
+
 let strikes = [];
 let strikeIdSeq = 0;
 let map, canvasRenderer, monitorMarker, soundRingLayer;
@@ -109,10 +120,34 @@ const STRIKES_STORAGE_KEY = 'lm_strikes_v2';
 // ══════════════════════════════════════════════════════════════
 //  永続化
 // ══════════════════════════════════════════════════════════════
-function saveConfig() { localStorage.setItem('lm_config', JSON.stringify(cfg)); }
+const HOME_STORAGE_KEY = 'lm_home';
+
+function saveConfig() {
+  try { localStorage.setItem('lm_config', JSON.stringify(cfg)); } catch {}
+  saveHome();
+}
 function loadConfig() {
   try { return JSON.parse(localStorage.getItem('lm_config') || '{}'); }
   catch { return {}; }
+}
+
+// 自宅（監視地点）の座標だけを独立したキーに保存する。
+// 設定全体が消えたり読めなくなっても、座標だけは次回起動時に復元できる。
+function saveHome() {
+  if (!hasLocation()) return;
+  try {
+    localStorage.setItem(HOME_STORAGE_KEY,
+      JSON.stringify({ name: cfg.name, lat: cfg.lat, lon: cfg.lon }));
+  } catch {}
+}
+function loadHome() {
+  try {
+    const h = JSON.parse(localStorage.getItem(HOME_STORAGE_KEY) || 'null');
+    if (h && isFinite(h.lat) && isFinite(h.lon)) {
+      return { name: h.name, lat: Number(h.lat), lon: Number(h.lon) };
+    }
+  } catch {}
+  return null;
 }
 
 function saveGeocodeCache() {
@@ -1095,8 +1130,11 @@ function openSettings() {
 function applySettings() {
   const prevDotColor = cfg.dotColor;
   cfg.name    = document.getElementById('cfgName').value.trim() || cfg.name;
-  cfg.lat     = parseFloat(document.getElementById('cfgLat').value) || cfg.lat;
-  cfg.lon     = parseFloat(document.getElementById('cfgLon').value) || cfg.lon;
+  // 0 も有効な座標なので、|| ではなく数値として妥当かどうかで判定する
+  const inLat = parseFloat(document.getElementById('cfgLat').value);
+  const inLon = parseFloat(document.getElementById('cfgLon').value);
+  if (isFinite(inLat)) cfg.lat = inLat;
+  if (isFinite(inLon)) cfg.lon = inLon;
   cfg.radius  = parseInt(document.getElementById('cfgRadius').value) || cfg.radius;
   cfg.hours   = parseInt(document.getElementById('cfgHours').value) || cfg.hours;
   cfg.monitorRadius     = parseInt(document.getElementById('cfgMonitorRadius').value) || cfg.monitorRadius;
