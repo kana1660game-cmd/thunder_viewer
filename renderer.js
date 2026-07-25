@@ -1182,7 +1182,15 @@ function fillLocationFromGPS() {
       const { latitude, longitude, accuracy } = pos.coords;
       document.getElementById('cfgLat').value = latitude.toFixed(5);
       document.getElementById('cfgLon').value = longitude.toFixed(5);
-      statusEl.textContent = `取得しました（誤差±${Math.round(accuracy)}m）。「保存して適用」で確定します`;
+      // 取得した瞬間に自宅位置を地図へ反映し保存する（次回も引き継ぐ）
+      cfg.lat = latitude;
+      cfg.lon = longitude;
+      saveConfig();
+      placeMonitorMarker();
+      drawSoundRing();
+      updateStatChips();
+      if (map) map.flyTo([latitude, longitude], 9, { duration: 1 });
+      statusEl.textContent = `現在地を自宅に設定しました（誤差±${Math.round(accuracy)}m）`;
       btn.disabled = false;
     },
     (err) => {
@@ -1244,7 +1252,7 @@ const AR = {
   active: false,
   stream: null,
   heading: null,      // 端末が向いている方位（真北=0, 時計回り）
-  pitch: 0,           // 端末の上下の傾き（beta 由来）
+  pitch: 90,          // 端末の上下の傾き（beta 由来）。直立=約90°=水平線を見ている状態
   rafId: null,
   orientHandler: null,
   markers: new Map(), // strikeId -> DOM要素
@@ -1394,16 +1402,19 @@ function arRenderLoop() {
 
       // 水平: 視野中心からの割合で画面X座標へ
       const x = W / 2 + (dx / (AR_HFOV / 2)) * (W / 2);
-      // 垂直: 落雷は地上=水平線付近。端末の上下の傾き(pitch)で上下させAR感を出す
-      const camElev = 90 - AR.pitch;                    // カメラ中心の仰角(度)
-      const y = H / 2 + (camElev / (AR_VFOV / 2)) * (H / 2);
+      // 垂直: 落雷は地上=水平線付近。端末の上下の傾き(pitch)で水平線を上下させる。
+      // pitch は直立で約90°。データが無い間は90°（＝水平線を画面中央）とみなす。
+      const pitch = (typeof AR.pitch === 'number') ? AR.pitch : 90;
+      const camElev = 90 - pitch;                       // カメラ中心の仰角(度)。上向きで正
+      let y = H / 2 + (camElev / (AR_VFOV / 2)) * (H / 2);
+      y = Math.max(H * 0.12, Math.min(H * 0.88, y));    // 画面内の帯に収める
 
       seen.add(s.id);
       let el = AR.markers.get(s.id);
       if (!el) { el = createArMarker(s); overlay.appendChild(el); AR.markers.set(s.id, el); }
       updateArMarker(el, s, now);
       el.style.transform =
-        `translate(-50%, -50%) translate(${x.toFixed(1)}px, ${Math.max(8, Math.min(H - 8, y)).toFixed(1)}px)`;
+        `translate(-50%, -50%) translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
     }
   }
 

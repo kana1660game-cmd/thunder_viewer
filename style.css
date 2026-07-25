@@ -27,6 +27,14 @@ html, body {
   overflow: hidden;
   user-select: none;
 }
+/* ヘッダー高さに依存せずに全体を縦に積む土台。
+   iOS のツールバーで高さが変わる問題に dvh で対応（vh はフォールバック）。 */
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+}
 
 /* ── ヘッダー ────────────────────────────────────────────────── */
 .app-header {
@@ -134,7 +142,8 @@ html, body {
 /* ── メインレイアウト ────────────────────────────────────────── */
 .main-layout {
   display: flex;
-  height: calc(100vh - 48px);
+  flex: 1;
+  min-height: 0;   /* 子要素のスクロールを効かせる */
   overflow: hidden;
 }
 
@@ -775,4 +784,114 @@ html, body {
   margin-left: 10px;
   font-size: 11px;
   color: var(--text-dim);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   スマホ向けレイアウト（縦画面・狭幅）
+   ══════════════════════════════════════════════════════════════ */
+@media (max-width: 760px) {
+  /* ── ヘッダー：2行まで折り返しを許可し、要素を小型化 ── */
+  .app-header {
+    height: auto;
+    min-height: 46px;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 10px;
+    padding-top: max(6px, env(safe-area-inset-top));
+    row-gap: 6px;
+  }
+  .header-left  { gap: 7px; flex: 1 1 auto; min-width: 0; }
+  .header-right { gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+
+  .app-title { display: none; }               /* ロゴ⚡は残す */
+  .conn-badge { font-size: 10px; padding: 2px 7px; }
+
+  /* 補助的なチップは隠して幅を確保（🗾日本全体・直近は残す） */
+  #statApi, #statTotal { display: none; }
+  .stat-chip { font-size: 11px; padding: 3px 8px; }
+
+  /* カメラ固定レバーはラベルを省いてアイコン相当に */
+  .lever-label { display: none; }
+  .lever-switch { padding: 5px 8px; }
+
+  /* アイコンボタンはタップしやすいサイズに */
+  .icon-btn {
+    font-size: 17px;
+    padding: 7px 10px;
+    min-width: 40px;
+    min-height: 36px;
+  }
+
+  /* ── 本体：地図を上、履歴を下に縦積み ── */
+  .main-layout { flex-direction: column; }
+
+  .map-wrap {
+    flex: 1 1 auto;
+    min-height: 48vh;      /* 地図を主役にする */
+  }
+
+  .side-panel {
+    width: 100%;
+    min-width: 0;
+    flex: 0 0 auto;
+    max-height: 34vh;      /* 履歴は下部に控えめに */
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+  .section-title { padding: 9px 12px 7px; }
+
+  /* ── 地図上のフローティングUI（狭幅で重ならないよう再配置） ── */
+  .filter-bar {
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    transform: none;             /* 中央寄せを解除して全幅に */
+    justify-content: flex-start;
+    max-width: none;
+    overflow-x: auto;            /* はみ出す分は横スクロール */
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .filter-bar::-webkit-scrollbar { display: none; }
+
+  /* 音波到達パネルはフィルターバーの下へ */
+  .sound-arrival-panel {
+    top: 52px;
+    left: 8px;
+    max-width: 62vw;
+    font-size: 11px;
+  }
+
+  .ring-legend {
+    bottom: 10px;
+    left: 8px;
+    padding: 6px 9px;
+  }
+  .ring-legend-item { font-size: 10px; }
+
+  /* ── モーダル：全幅・縦長に ── */
+  .modal {
+    width: 100%;
+    max-width: 100%;
+    max-height: 92vh;
+    border-radius: 14px 14px 0 0;   /* 下からせり出すシート風 */
+    margin-top: auto;               /* 画面下寄せ */
+  }
+  .modal-overlay { align-items: flex-end; }
+  .modal-body { padding: 16px; }
+  /* 設定の2カラムは狭いと窮屈なので1カラムへ */
+  .setting-row { grid-template-columns: 1fr; }
+
+  /* フォーム入力はタップ精度重視で少し大きく */
+  .setting-group input,
+  .setting-group select { padding: 10px 12px; font-size: 15px; }
+  .save-btn { padding: 13px; font-size: 15px; }
+  .gps-btn { padding: 11px 14px; width: 100%; }
+  .gps-status { display: block; margin: 6px 0 0; }
+}
+
+/* さらに狭い端末（iPhone SE 等）向けの微調整 */
+@media (max-width: 380px) {
+  #statRecent { display: none; }
+  .icon-btn { padding: 7px 8px; min-width: 36px; }
 }
