@@ -1139,7 +1139,41 @@ function openSettings() {
   document.getElementById('cfgHistoryDisplayCount').value = cfg.historyDisplayCount || 50;
   document.getElementById('cfgMapDisplaySec').value       = cfg.mapDisplaySec || 0;
   document.getElementById('cfgMapDisplayCount').value     = cfg.mapDisplayCount || 500;
+  const gpsStatus = document.getElementById('gpsStatus');
+  if (gpsStatus) gpsStatus.textContent = '';
   document.getElementById('settingsModal').classList.add('open');
+}
+
+// 現在地（GPS）から緯度経度を取得して入力欄に反映する。
+// セキュリティ: ユーザーのボタン操作を起点にのみ実行し、HTTPS(secure context)
+// と明示的な許可が必要。取得座標は設定欄に入れるだけで外部送信はしない。
+function fillLocationFromGPS() {
+  const statusEl = document.getElementById('gpsStatus');
+  const btn = document.getElementById('btnUseGPS');
+  if (!window.isSecureContext || !navigator.geolocation) {
+    statusEl.textContent = '位置情報は利用できません（HTTPS接続が必要です）';
+    return;
+  }
+  statusEl.textContent = '取得中…';
+  btn.disabled = true;
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const { latitude, longitude, accuracy } = pos.coords;
+      document.getElementById('cfgLat').value = latitude.toFixed(5);
+      document.getElementById('cfgLon').value = longitude.toFixed(5);
+      statusEl.textContent = `取得しました（誤差±${Math.round(accuracy)}m）。「保存して適用」で確定します`;
+      btn.disabled = false;
+    },
+    (err) => {
+      const msg = err.code === err.PERMISSION_DENIED ? '位置情報の利用が許可されませんでした'
+                : err.code === err.POSITION_UNAVAILABLE ? '現在地を特定できませんでした'
+                : err.code === err.TIMEOUT ? 'タイムアウトしました。もう一度お試しください'
+                : '取得に失敗しました';
+      statusEl.textContent = msg;
+      btn.disabled = false;
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+  );
 }
 
 function applySettings() {
@@ -1423,6 +1457,8 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('closeSettings').addEventListener('click', () =>
     document.getElementById('settingsModal').classList.remove('open'));
   document.getElementById('saveSettings').addEventListener('click', applySettings);
+  const btnGPS = document.getElementById('btnUseGPS');
+  if (btnGPS) btnGPS.addEventListener('click', fillLocationFromGPS);
   document.querySelectorAll('.modal-overlay').forEach(el =>
     el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); }));
   document.querySelectorAll('.filter-btn').forEach(btn => {

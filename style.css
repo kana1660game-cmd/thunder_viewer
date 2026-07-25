@@ -755,3 +755,24 @@ html, body {
 .ar-marker.ar-warn .ar-marker-label {
   background: rgba(255,107,53,0.85);
 }
+
+/* ── 現在地取得ボタン ──────────────────────────────────────── */
+.gps-btn {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.gps-btn:hover { border-color: var(--blue); }
+.gps-btn:active { background: var(--bg-2); }
+.gps-btn:disabled { opacity: 0.6; cursor: default; }
+.gps-status {
+  display: inline-block;
+  margin-left: 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
