@@ -198,6 +198,21 @@ function haversine(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
+// 2地点間の方位角（真北=0°、時計回り、0〜360°）を返す。
+// ARで「その落雷がどの方角にあるか」を求めるのに使う。
+function bearingTo(lat1, lon1, lat2, lon2) {
+  const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
+  const Δλ = (lon2 - lon1) * Math.PI / 180;
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+// 2つの方位の符号付き差（-180〜+180°）。正=時計回りに右側。
+function angleDelta(target, ref) {
+  return ((target - ref + 540) % 360) - 180;
+}
+
 function soundTravelSec(distKm) { return (distKm * 1000) / SOUND_SPEED; }
 
 function fmtSec(sec) {
@@ -1161,6 +1176,220 @@ function applySettings() {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  AR ビュー（カメラで方角に落雷を重ねて表示）
+// ──────────────────────────────────────────────────────────────
+//  セキュリティ方針:
+//   - カメラはボタンのタップ操作を起点にのみ起動し、終了時に
+//     全トラックを stop() して確実に解放する（録画・保持しない）。
+//   - 映像はブラウザ内でのみ扱い、外部へ送信しない（新規の通信なし）。
+//   - HTTPS（secure context）でのみ動作。非対応環境ではメッセージ表示。
+//   - ラベルは textContent で描画（innerHTML を使わず XSS を防ぐ）。
+// ══════════════════════════════════════════════════════════════
+const AR = {
+  active: false,
+  stream: null,
+  heading: null,      // 端末が向いている方位（真北=0, 時計回り）
+  pitch: 0,           // 端末の上下の傾き（beta 由来）
+  rafId: null,
+  orientHandler: null,
+  markers: new Map(), // strikeId -> DOM要素
+};
+
+// 水平・垂直の視野角（一般的なスマホ背面カメラの近似値）
+const AR_HFOV = 65;   // 度
+const AR_VFOV = 50;   // 度
+// AR に出す落雷の条件
+const AR_MAX_AGE_MS = 15 * 60 * 1000;  // 直近15分
+const AR_MAX_COUNT  = 60;
+
+function arSupported() {
+  return window.isSecureContext &&
+         navigator.mediaDevices &&
+         typeof navigator.mediaDevices.getUserMedia === 'function';
+}
+
+async function openAR() {
+  if (AR.active) return;
+  if (!hasLocation()) {
+    alert('先に⚙️設定で監視地点（自宅）の座標を登録してください。');
+    return;
+  }
+  if (!arSupported()) {
+    alert('この環境ではカメラを利用できません（HTTPS接続と対応ブラウザが必要です）。');
+    return;
+  }
+
+  const view    = document.getElementById('arView');
+  const video   = document.getElementById('arVideo');
+  const msgEl    = document.getElementById('arMsg');
+  view.hidden = false;
+  msgEl.textContent = 'カメラとセンサーを準備中…';
+
+  // iOS 13+ はモーションセンサーの明示的な許可が必要（ユーザー操作起点で呼ぶ）
+  try {
+    const DOE = window.DeviceOrientationEvent;
+    if (DOE && typeof DOE.requestPermission === 'function') {
+      const res = await DOE.requestPermission();
+      if (res !== 'granted') {
+        msgEl.textContent = '方位センサーの利用が許可されませんでした。';
+      }
+    }
+  } catch { /* 許可ダイアログのキャンセル等は無視して続行 */ }
+
+  // カメラ起動（背面カメラ優先）
+  try {
+    AR.stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } },
+      audio: false,
+    });
+  } catch (e) {
+    msgEl.textContent = 'カメラを起動できませんでした（許可が必要です）。';
+    // 少し見せてから閉じる
+    setTimeout(closeAR, 2500);
+    return;
+  }
+
+  video.srcObject = AR.stream;
+  try { await video.play(); } catch {}
+
+  // 方位センサーの購読（Android は absolute、iOS は webkitCompassHeading）
+  AR.orientHandler = onDeviceOrientation;
+  window.addEventListener('deviceorientationabsolute', AR.orientHandler, true);
+  window.addEventListener('deviceorientation', AR.orientHandler, true);
+
+  AR.active = true;
+  msgEl.textContent = '';
+  arRenderLoop();
+}
+
+function closeAR() {
+  if (AR.orientHandler) {
+    window.removeEventListener('deviceorientationabsolute', AR.orientHandler, true);
+    window.removeEventListener('deviceorientation', AR.orientHandler, true);
+    AR.orientHandler = null;
+  }
+  if (AR.rafId) { cancelAnimationFrame(AR.rafId); AR.rafId = null; }
+
+  // カメラを確実に解放する
+  if (AR.stream) {
+    AR.stream.getTracks().forEach(t => t.stop());
+    AR.stream = null;
+  }
+  const video = document.getElementById('arVideo');
+  if (video) video.srcObject = null;
+
+  const overlay = document.getElementById('arOverlay');
+  if (overlay) overlay.replaceChildren();
+  AR.markers.clear();
+
+  const view = document.getElementById('arView');
+  if (view) view.hidden = true;
+  AR.active = false;
+}
+
+// 端末の向きから方位（真北基準・時計回り）と上下の傾きを求める
+function onDeviceOrientation(e) {
+  let heading = null;
+  if (typeof e.webkitCompassHeading === 'number') {
+    heading = e.webkitCompassHeading;                 // iOS: 既に真北基準
+  } else if (e.absolute && typeof e.alpha === 'number') {
+    heading = (360 - e.alpha) % 360;                  // Android(absolute): alpha は反時計回り
+  }
+  if (heading !== null) {
+    // 画面の回転（横持ち等）を補正
+    const scr = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+    AR.heading = (heading + scr + 360) % 360;
+  }
+  if (typeof e.beta === 'number') AR.pitch = e.beta;   // 直立で約90°
+}
+
+// AR 表示対象の落雷を抽出する（監視圏内・直近・新しい順）
+function arVisibleStrikes() {
+  const now = Date.now();
+  const out = [];
+  for (const s of strikes) {
+    if (s.isFar) continue;
+    if (!isFinite(s.dist)) continue;
+    if (now - s.timeMs > AR_MAX_AGE_MS) continue;
+    out.push(s);
+    if (out.length >= AR_MAX_COUNT) break;
+  }
+  return out;
+}
+
+function arRenderLoop() {
+  if (!AR.active) return;
+  const overlay = document.getElementById('arOverlay');
+  const headEl  = document.getElementById('arHeading');
+  const W = overlay.clientWidth, H = overlay.clientHeight;
+
+  if (AR.heading === null) {
+    headEl.textContent = '方位センサー校正中…（端末を8の字に動かしてください）';
+  } else {
+    headEl.textContent = `方位 ${Math.round(AR.heading)}° ${headingName(AR.heading)}`;
+  }
+
+  const seen = new Set();
+  if (AR.heading !== null) {
+    const now = Date.now();
+    for (const s of arVisibleStrikes()) {
+      const bearing = bearingTo(cfg.lat, cfg.lon, s.lat, s.lon);
+      const dx = angleDelta(bearing, AR.heading);       // 左右方向のずれ（度）
+      if (Math.abs(dx) > AR_HFOV / 2) continue;         // 視野外は描かない
+
+      // 水平: 視野中心からの割合で画面X座標へ
+      const x = W / 2 + (dx / (AR_HFOV / 2)) * (W / 2);
+      // 垂直: 落雷は地上=水平線付近。端末の上下の傾き(pitch)で上下させAR感を出す
+      const camElev = 90 - AR.pitch;                    // カメラ中心の仰角(度)
+      const y = H / 2 + (camElev / (AR_VFOV / 2)) * (H / 2);
+
+      seen.add(s.id);
+      let el = AR.markers.get(s.id);
+      if (!el) { el = createArMarker(s); overlay.appendChild(el); AR.markers.set(s.id, el); }
+      updateArMarker(el, s, now);
+      el.style.transform =
+        `translate(-50%, -50%) translate(${x.toFixed(1)}px, ${Math.max(8, Math.min(H - 8, y)).toFixed(1)}px)`;
+    }
+  }
+
+  // 視野から外れた/消えたマーカーを撤去
+  for (const [id, el] of AR.markers) {
+    if (!seen.has(id)) { el.remove(); AR.markers.delete(id); }
+  }
+
+  AR.rafId = requestAnimationFrame(arRenderLoop);
+}
+
+function headingName(deg) {
+  const names = ['北','北東','東','南東','南','南西','西','北西'];
+  return names[Math.round(deg / 45) % 8];
+}
+
+function createArMarker(s) {
+  const el = document.createElement('div');
+  el.className = 'ar-marker' + (s.isWarn ? ' ar-warn' : '');
+  const dot = document.createElement('div');
+  dot.className = 'ar-marker-dot';
+  const label = document.createElement('div');
+  label.className = 'ar-marker-label';
+  el.appendChild(dot);
+  el.appendChild(label);
+  el._label = label;   // 参照を保持
+  return el;
+}
+
+function updateArMarker(el, s, now) {
+  // textContent のみ使用（外部由来の地名を安全に描画）
+  const remSec = (s.timeMs + s.soundSec * 1000 - now) / 1000;
+  const place = s.place && s.place !== '取得中...' ? s.place : '';
+  const sound = s.isWarn
+    ? (remSec > 0 ? `　🔊${fmtSec(remSec)}` : '　🔊到達済み')
+    : '';
+  el._label.textContent = `${s.dist.toFixed(1)}km${place ? ' ' + place : ''}${sound}`;
+  el.classList.toggle('ar-warn', !!s.isWarn);
+}
+
+// ══════════════════════════════════════════════════════════════
 //  初期化
 // ══════════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
@@ -1173,6 +1402,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btnStats').addEventListener('click', openStats);
   document.getElementById('btnSettings').addEventListener('click', openSettings);
+
+  // AR ビュー（カメラで方角に落雷を重ねる）
+  const btnAR = document.getElementById('btnAR');
+  if (btnAR) btnAR.addEventListener('click', openAR);
+  const arClose = document.getElementById('arClose');
+  if (arClose) arClose.addEventListener('click', closeAR);
+  // 非対応環境ではボタンを無効化
+  if (btnAR && !arSupported()) {
+    btnAR.disabled = true;
+    btnAR.title = 'ARビューは HTTPS 接続と対応ブラウザが必要です';
+  }
+  // タブが隠れた/離脱した際はカメラを確実に解放する
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && AR.active) closeAR();
+  });
+  window.addEventListener('pagehide', () => { if (AR.active) closeAR(); });
   document.getElementById('closeStats').addEventListener('click', () =>
     document.getElementById('statsModal').classList.remove('open'));
   document.getElementById('closeSettings').addEventListener('click', () =>

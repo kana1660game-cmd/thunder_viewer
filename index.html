@@ -3,6 +3,21 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- セキュリティ: 読み込み元・接続先を既知のホストに限定する（XSS/情報漏えい対策） -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self' https://unpkg.com;
+    style-src 'self' https://unpkg.com 'unsafe-inline';
+    img-src 'self' data: blob: https://tile.openstreetmap.org https://unpkg.com;
+    media-src 'self' blob:;
+    connect-src 'self' https://nominatim.openstreetmap.org wss://*.blitzortung.org;
+    worker-src 'self' blob:;
+    object-src 'none';
+    base-uri 'self';
+    form-action 'none';
+    frame-ancestors 'none';
+  ">
+  <meta name="referrer" content="no-referrer">
   <title>⚡ Lightning Monitor</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="style.css">
@@ -26,6 +41,7 @@
         <span class="lever-track"><span class="lever-knob"></span></span>
       </button>
       <button class="icon-btn" id="btnCamera" title="カメラ追従 ON">📷</button>
+      <button class="icon-btn" id="btnAR" title="ARビュー（カメラで方角に落雷を表示）">🧭</button>
       <button class="icon-btn" id="btnStats" title="統計">📊</button>
       <button class="icon-btn" id="btnSettings" title="設定">⚙️</button>
     </div>
@@ -211,6 +227,19 @@
         <button class="save-btn" id="saveSettings">保存して適用</button>
       </div>
     </div>
+  </div>
+
+  <!-- AR ビュー（カメラで方角に落雷を重ねる。起動はボタン押下時のみ） -->
+  <div id="arView" class="ar-view" hidden>
+    <video id="arVideo" class="ar-video" playsinline muted></video>
+    <div id="arOverlay" class="ar-overlay"></div>
+    <div class="ar-crosshair"></div>
+    <div class="ar-hud-top">
+      <span id="arHeading" class="ar-heading">方位 —</span>
+      <button id="arClose" class="ar-close" title="ARを終了">✕ 終了</button>
+    </div>
+    <div id="arMsg" class="ar-msg"></div>
+    <div class="ar-hint">📷 端末をかざした方向の落雷を表示します（映像は端末内でのみ処理され送信されません）</div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

@@ -619,3 +619,139 @@ html, body {
 .popup-row { color: var(--text-dim); }
 .popup-row b { color: var(--text); }
 .popup-vol-label { font-size: 10px; color: var(--text-dim); }
+
+/* ── AR ビュー（カメラで方角に落雷を表示） ─────────────────── */
+.ar-view {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: #000;
+  overflow: hidden;
+}
+.ar-view[hidden] { display: none; }
+
+.ar-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+}
+.ar-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* 画面中央の照準 */
+.ar-crosshair {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 26px; height: 26px;
+  margin: -13px 0 0 -13px;
+  border: 2px solid rgba(255,255,255,0.55);
+  border-radius: 50%;
+  pointer-events: none;
+}
+.ar-crosshair::before,
+.ar-crosshair::after {
+  content: '';
+  position: absolute;
+  background: rgba(255,255,255,0.55);
+}
+.ar-crosshair::before { left: 50%; top: -10px; width: 1px; height: 10px; }
+.ar-crosshair::after  { top: 50%; left: -10px; height: 1px; width: 10px; }
+
+/* 上部 HUD（方位表示と終了ボタン） */
+.ar-hud-top {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  padding-top: max(14px, env(safe-area-inset-top));
+  background: linear-gradient(rgba(0,0,0,0.6), rgba(0,0,0,0));
+}
+.ar-heading {
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+  font-variant-numeric: tabular-nums;
+}
+.ar-close {
+  background: rgba(0,0,0,0.5);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.35);
+  border-radius: 20px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ar-close:active { background: rgba(255,255,255,0.2); }
+
+.ar-msg {
+  position: absolute;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  color: #fff;
+  font-size: 14px;
+  text-align: center;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+  padding: 0 24px;
+}
+.ar-hint {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  padding: 12px 16px;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  color: rgba(255,255,255,0.85);
+  font-size: 11px;
+  text-align: center;
+  background: linear-gradient(rgba(0,0,0,0), rgba(0,0,0,0.6));
+}
+
+/* 落雷マーカー */
+.ar-marker {
+  position: absolute;
+  left: 0; top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  will-change: transform;
+  pointer-events: none;
+}
+.ar-marker-dot {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--blue);
+  border: 2px solid #fff;
+  box-shadow: 0 0 10px 2px rgba(74,158,255,0.8);
+}
+.ar-marker.ar-warn .ar-marker-dot {
+  background: var(--accent2);
+  box-shadow: 0 0 12px 3px rgba(255,107,53,0.9);
+  animation: arPulse 1s ease-in-out infinite;
+}
+@keyframes arPulse {
+  0%, 100% { transform: scale(1);   opacity: 1;   }
+  50%      { transform: scale(1.4); opacity: 0.7; }
+}
+.ar-marker-label {
+  margin-top: 4px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(0,0,0,0.65);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.9);
+}
+.ar-marker.ar-warn .ar-marker-label {
+  background: rgba(255,107,53,0.85);
+}
