@@ -641,6 +641,8 @@ function buildPopupHTML(s) {
 // ══════════════════════════════════════════════════════════════
 //  波紋演出（キャンバスオーバーレイ）
 // ══════════════════════════════════════════════════════════════
+let animCssW = 0, animCssH = 0;   // CSS ピクセルでの描画領域サイズ
+
 function initAnimCanvas() {
   const wrap = document.querySelector('.map-wrap');
   animCanvas = document.createElement('canvas');
@@ -649,13 +651,30 @@ function initAnimCanvas() {
   animCtx = animCanvas.getContext('2d', { alpha: true });
   resizeAnimCanvas();
   window.addEventListener('resize', resizeAnimCanvas);
+  window.addEventListener('orientationchange', resizeAnimCanvas);
   map.on('resize', resizeAnimCanvas);
+  // iOS では初期レイアウト確定が遅れてサイズ0のままになることがあるため、
+  // ResizeObserver で確実に追従させる。
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(resizeAnimCanvas).observe(wrap);
+  }
 }
 
+// Retina（高DPR）対応でキャンバスをくっきり描画し、
+// 実サイズが0のまま（iOSの初期化タイミング等）にならないようにする。
 function resizeAnimCanvas() {
   if (!animCanvas) return;
-  animCanvas.width  = animCanvas.offsetWidth;
-  animCanvas.height = animCanvas.offsetHeight;
+  const rect = animCanvas.getBoundingClientRect();
+  const cssW = rect.width  || animCanvas.offsetWidth;
+  const cssH = rect.height || animCanvas.offsetHeight;
+  if (!cssW || !cssH) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  animCssW = cssW;
+  animCssH = cssH;
+  animCanvas.width  = Math.round(cssW * dpr);
+  animCanvas.height = Math.round(cssH * dpr);
+  // 以降は CSS ピクセル座標で描画できるよう変換を設定
+  animCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
 function showRipple(lat, lon, isWarn) {
@@ -686,7 +705,9 @@ function renderAnimCanvas(now) {
     } else i++;
   }
 
-  const W = animCanvas.width, H = animCanvas.height;
+  // 実サイズが未確定（iOS初期化タイミング等）なら描画前に確定させる
+  if (!animCssW || !animCssH) resizeAnimCanvas();
+  const W = animCssW, H = animCssH;
   animCtx.clearRect(0, 0, W, H);
 
   if (activeAnimations.length === 0) {
