@@ -24,6 +24,7 @@ const DEFAULT_CONFIG = {
   historyDisplayCount: 50,
   mapDisplaySec: 0,
   mapDisplayCount: 500,
+  sidePanelWidth: 320,   // 落雷履歴パネルの横幅(px)。リサイザーで調整・保存する
 };
 
 // 日本の緯度経度範囲（沖縄〜北海道、与那国〜択捉）
@@ -58,7 +59,9 @@ let geocodeCache = loadGeocodeCache();
 let mapFilterSec = 0;
 
 // 受信済み落雷の time (ns) を60秒間保持して重複着信を除外する
-const _seenStrikeTimes = new Set();
+// key(ns文字列) -> 失効時刻(ms)。定期スイープで掃除する（大量受信時に
+// setTimeout が乱立してメモリ・GC負荷になるのを避けるためタイマーは持たない）。
+const _seenStrikeTimes = new Map();
 
 // ── キャンバスオーバーレイアニメーション ──────────────────────────
 let animCanvas = null, animCtx = null, animRafId = null;
@@ -85,6 +88,23 @@ const MANUAL_HOLD_MS = 5000;
 function isManualHold() { return Date.now() - lastUserInteractMs < MANUAL_HOLD_MS; }
 
 const SOUND_SPEED = 340;
+
+// ── UI更新のフレーム集約 ─────────────────────────────────────
+// 落雷を連続受信すると、統計チップ・音波パネルの再描画（DOM書き換え）が
+// 1秒間に何百回も走ってラグの原因になる。requestAnimationFrame で1フレーム
+// あたり最大1回にまとめる。1秒間隔の定期更新もあるので取りこぼしはない。
+let _statChipsScheduled = false;
+function scheduleStatChips() {
+  if (_statChipsScheduled) return;
+  _statChipsScheduled = true;
+  requestAnimationFrame(() => { _statChipsScheduled = false; updateStatChips(); });
+}
+let _soundPanelScheduled = false;
+function scheduleSoundPanel() {
+  if (_soundPanelScheduled) return;
+  _soundPanelScheduled = true;
+  requestAnimationFrame(() => { _soundPanelScheduled = false; updateSoundPanel(); });
+}
 
 // 距離 distKm における雷の推定音量 (dB SPL) を返す。
 // モデル: 雷の音源は1km地点で約120dB SPL を基準とし、
@@ -247,10 +267,17 @@ function isDuplicateStrike(timeNs) {
   if (!timeNs) return false;
   const key = String(timeNs);
   if (_seenStrikeTimes.has(key)) return true;
-  _seenStrikeTimes.add(key);
-  setTimeout(() => _seenStrikeTimes.delete(key), 60000);
+  _seenStrikeTimes.set(key, Date.now() + 60000);
   return false;
 }
+
+// 期限切れの重複除外キーを定期的にまとめて掃除する
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, exp] of _seenStrikeTimes) {
+    if (exp <= now) _seenStrikeTimes.delete(k);
+  }
+}, 15000);
 
 // 設定した dot カラーを返す（警告・通常で使い分け）
 function getChosenColor() {
@@ -325,8 +352,8 @@ async function addLiveStrike({ lat, lon, timeMs, dist }) {
   pushStrike(strike);
   renderStrikeOnMap(strike, false);
   renderHistoryDebounced();
-  updateSoundPanel();
-  updateStatChips();
+  scheduleSoundPanel();
+  scheduleStatChips();
   scheduleSaveStrikes();
 
   // カメラ追従（圏外は cameraFar が ON の場合のみ）
@@ -350,7 +377,7 @@ async function addLiveStrike({ lat, lon, timeMs, dist }) {
       scheduleSaveStrikes();
     }
     renderHistoryDebounced();
-    updateSoundPanel();
+    scheduleSoundPanel();
   }
 }
 
@@ -526,6 +553,15 @@ function placeMonitorMarker() {
   });
   monitorMarker = L.marker([cfg.lat, cfg.lon], { icon, zIndexOffset: 1000 })
     .addTo(map);
+  // 自宅（監視地点）に小さな吹き出しを常時表示する
+  const label = cfg.name && cfg.name !== '監視地点'
+    ? `現在地（${cfg.name}）` : '現在地';
+  monitorMarker.bindTooltip(label, {
+    permanent: true,
+    direction: 'top',
+    offset: [0, -half - 2],
+    className: 'home-tooltip',
+  });
 }
 
 function drawSoundRing() {
@@ -677,8 +713,13 @@ function resizeAnimCanvas() {
   animCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
+// 同時に走らせる波紋アニメーションの上限。豪雨時に大量発生しても
+// canvas 描画コストが青天井にならないよう、古いものから間引く。
+const MAX_ACTIVE_RIPPLES = 90;
+
 function showRipple(lat, lon, isWarn) {
   if (!cfg.showRipple) return;
+  if (activeAnimations.length >= MAX_ACTIVE_RIPPLES) activeAnimations.shift();
   activeAnimations.push({
     lat, lon,
     color: isWarn ? '#ff6b35' : getChosenColor(),
@@ -823,7 +864,7 @@ function animationTick(timestamp) {
         }
         activeRings.delete(id);
         renderHistoryDebounced();
-        updateSoundPanel();
+        scheduleSoundPanel();
         scheduleFadeOut(strike, 3 * 60 * 1000);
       } else {
         const ratio = elapsed / durationMs;
@@ -971,6 +1012,7 @@ function renderHistory() {
           <span class="history-time">🕐 ${fmtDateTime(s.strikeTime)}</span>
           <span class="history-dist">${s.dist.toFixed(1)} km</span>
         </div>
+        ${!s.isFar ? `<div class="history-sound" data-sound="${s.id}"></div>` : ''}
       </div>`;
   }).join('');
 
@@ -988,51 +1030,52 @@ function renderHistory() {
 
   _knownIds = newIds;
   list.scrollTop = scrollTop;
+
+  // 再構築直後に音波到達情報を即時反映（毎秒更新を待たない）
+  updateSoundPanel();
 }
 
 // ══════════════════════════════════════════════════════════════
 //  音波到達パネル（監視圏内のみ）
 // ══════════════════════════════════════════════════════════════
+// 履歴パネル内の各項目に音波到達カウントダウン・推定音量を差し込む。
+// （旧・地図上のフローティング「音波到達」窓を廃止し、右の履歴に統合した）
+// 履歴の全面再構築はせず、該当項目の .history-sound だけを毎秒書き換える。
 function updateSoundPanel() {
-  const panel = document.getElementById('soundPanel');
-  if (!panel) return;
+  const list = document.getElementById('historyList');
+  if (!list) return;
   const now = Date.now();
-  const active = strikes.filter(s => {
-    if (s.isHistorical || s.isFar) return false;
-    const arrivalMs = s.timeMs + s.soundSec * 1000;
-    return now < arrivalMs || (now - arrivalMs) < 90000;
-  }).slice(0, 6);
+  const nodes = list.querySelectorAll('.history-sound');
+  for (const el of nodes) {
+    const id = parseInt(el.dataset.sound);
+    const s = strikes.find(x => x.id === id);
+    if (!s || s.isFar) { el.textContent = ''; el.className = 'history-sound'; continue; }
 
-  if (active.length === 0) {
-    panel.innerHTML = `<div class="sap-title">▸ 音波到達</div><div class="sap-empty">待機中...</div>`;
-    return;
-  }
-
-  const items = active.map(s => {
     const arrivalMs = s.timeMs + s.soundSec * 1000;
     const remSec = (arrivalMs - now) / 1000;
-    const arrived = remSec <= 0;
-    let countdownHtml;
-    if (arrived) {
-      countdownHtml = `<div class="sap-countdown arrived">🔊 到達済み ✓</div>`;
+    // 到達前、または到達から90秒以内のものだけ表示する（それ以外は消す）
+    const active = remSec > 0 || (now - arrivalMs) < 90000;
+    if (!active) { el.textContent = ''; el.className = 'history-sound'; continue; }
+
+    let countdown, state;
+    if (remSec <= 0) {
+      countdown = '🔊 到達済み ✓';
+      state = 'arrived';
     } else if (remSec < 60) {
-      countdownHtml = `<div class="sap-countdown pending">🔴 音: <b>${Math.round(remSec)}</b>秒後</div>`;
+      countdown = `🔊 音: ${Math.round(remSec)}秒後`;
+      state = 'pending';
     } else {
       const m = Math.floor(remSec / 60);
       const sc = Math.round(remSec % 60);
-      countdownHtml = `<div class="sap-countdown pending">🔴 音: <b>${m}:${String(sc).padStart(2,'0')}</b>後</div>`;
+      countdown = `🔊 音: ${m}:${String(sc).padStart(2, '0')}後`;
+      state = 'pending';
     }
-    const name = s.place !== '取得中...'
-      ? `#${s.id} ${s.place}${s.pref ? ' ' + s.pref : ''}`
-      : `#${s.id} (${s.dist.toFixed(1)}km)`;
     const db = calcThunderDb(s.dist);
-    const volHtml = s.isWarn
-      ? `<div class="sap-vol">${db.toFixed(0)} dB — ${dbToLabel(db)}</div>`
-      : '';
-    return `<div class="sap-item"><div class="sap-name">${name}</div>${countdownHtml}${volHtml}</div>`;
-  }).join('');
-
-  panel.innerHTML = `<div class="sap-title">▸ 音波到達</div>${items}`;
+    const vol = s.isWarn ? `　📢 ${db.toFixed(0)}dB ${dbToLabel(db)}` : '';
+    // 外部由来の地名等は含まないため textContent で安全に描画
+    el.textContent = countdown + vol;
+    el.className = 'history-sound ' + state;
+  }
 }
 
 setInterval(() => {
@@ -1049,9 +1092,11 @@ function updateStatChips() {
   const cutoff = now - cfg.hours * 3600 * 1000;
   const monitorStrikes = strikes.filter(s => !s.isFar);
   const recent  = monitorStrikes.filter(s => s.timeMs >= cutoff);
+  const t = new Date();
+  const ty = t.getFullYear(), tm = t.getMonth(), td = t.getDate();
   const today   = monitorStrikes.filter(s => {
-    const d = new Date(s.timeMs), t = new Date();
-    return d.getFullYear()===t.getFullYear() && d.getMonth()===t.getMonth() && d.getDate()===t.getDate();
+    const d = new Date(s.timeMs);
+    return d.getFullYear()===ty && d.getMonth()===tm && d.getDate()===td;
   });
   const japanRecent = strikes.filter(s => s.timeMs >= cutoff);
   document.getElementById('statTotal').innerHTML  = `本日(監視) <b>${today.length}</b>`;
@@ -1402,12 +1447,15 @@ function arRenderLoop() {
 
       // 水平: 視野中心からの割合で画面X座標へ
       const x = W / 2 + (dx / (AR_HFOV / 2)) * (W / 2);
-      // 垂直: 落雷は地上=水平線付近。端末の上下の傾き(pitch)で水平線を上下させる。
-      // pitch は直立で約90°。データが無い間は90°（＝水平線を画面中央）とみなす。
+      // 垂直: 落雷は地上=地平線付近で「高さ」は本質的に無い。
+      // そのため縦は画面中央（地平線）に固定し、端末の傾きはごく弱くだけ反映。
+      // どんな持ち方でも必ず中央帯(30〜70%)に収まり、画面下端に張り付かない。
       const pitch = (typeof AR.pitch === 'number') ? AR.pitch : 90;
       const camElev = 90 - pitch;                       // カメラ中心の仰角(度)。上向きで正
-      let y = H / 2 + (camElev / (AR_VFOV / 2)) * (H / 2);
-      y = Math.max(H * 0.12, Math.min(H * 0.88, y));    // 画面内の帯に収める
+      // 基準位置を中央より少し上（画面の約42%）に置く。落雷は地平線付近だが
+      // 画面下部に張り付くと視認しづらいため、やや上寄りの帯に収める。
+      let y = H * 0.42 + (camElev / 90) * (H * 0.20);    // 感度を大きく下げる
+      y = Math.max(H * 0.22, Math.min(H * 0.58, y));     // やや上寄りの帯に必ず収める
 
       seen.add(s.id);
       let el = AR.markers.get(s.id);
@@ -1456,10 +1504,118 @@ function updateArMarker(el, s, now) {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  履歴パネルの横幅リサイズ
+// ══════════════════════════════════════════════════════════════
+const PANEL_MIN_W = 200;
+const PANEL_MAX_W = 720;
+
+function clampPanelWidth(w) {
+  // 画面が狭いときは上限を画面幅の7割までに抑える
+  const hardMax = Math.min(PANEL_MAX_W, Math.round(window.innerWidth * 0.7));
+  return Math.max(PANEL_MIN_W, Math.min(hardMax, w));
+}
+
+function applyPanelWidth(w) {
+  const panel = document.querySelector('.side-panel');
+  if (!panel) return;
+  panel.style.width = clampPanelWidth(w) + 'px';
+  // 地図のサイズが変わるので Leaflet に再計算させる
+  if (map) map.invalidateSize({ pan: false });
+}
+
+function setupPanelResizer() {
+  const resizer = document.getElementById('panelResizer');
+  const panel = document.querySelector('.side-panel');
+  if (!resizer || !panel) return;
+
+  // 保存済みの幅を復元
+  applyPanelWidth(cfg.sidePanelWidth || 320);
+
+  let dragging = false;
+  let rafPending = false;
+  let pendingW = cfg.sidePanelWidth || 320;
+
+  const onMove = (clientX) => {
+    // パネルは右端にあるので「ウィンドウ右端 − カーソルX」が新しい幅
+    pendingW = clampPanelWidth(window.innerWidth - clientX);
+    if (rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(() => {
+      rafPending = false;
+      panel.style.width = pendingW + 'px';
+      if (map) map.invalidateSize({ pan: false });
+    });
+  };
+
+  const startDrag = () => {
+    dragging = true;
+    resizer.classList.add('dragging');
+    document.body.classList.add('resizing-panel');
+    // ドラッグ中は自動カメラ移動を抑止（誤作動防止）
+    lastUserInteractMs = Date.now();
+  };
+
+  const endDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    resizer.classList.remove('dragging');
+    document.body.classList.remove('resizing-panel');
+    cfg.sidePanelWidth = clampPanelWidth(pendingW);
+    saveConfig();
+    if (map) map.invalidateSize({ pan: false });
+  };
+
+  // マウス
+  resizer.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    startDrag();
+    const mm = (ev) => { if (dragging) onMove(ev.clientX); };
+    const mu = () => {
+      window.removeEventListener('mousemove', mm);
+      window.removeEventListener('mouseup', mu);
+      endDrag();
+    };
+    window.addEventListener('mousemove', mm);
+    window.addEventListener('mouseup', mu);
+  });
+
+  // タッチ
+  resizer.addEventListener('touchstart', (e) => {
+    startDrag();
+    const tm = (ev) => {
+      if (dragging && ev.touches[0]) onMove(ev.touches[0].clientX);
+    };
+    const te = () => {
+      window.removeEventListener('touchmove', tm);
+      window.removeEventListener('touchend', te);
+      window.removeEventListener('touchcancel', te);
+      endDrag();
+    };
+    window.addEventListener('touchmove', tm, { passive: true });
+    window.addEventListener('touchend', te);
+    window.addEventListener('touchcancel', te);
+  }, { passive: true });
+
+  // ダブルクリックで既定幅に戻す
+  resizer.addEventListener('dblclick', () => {
+    pendingW = DEFAULT_CONFIG.sidePanelWidth;
+    applyPanelWidth(pendingW);
+    cfg.sidePanelWidth = pendingW;
+    saveConfig();
+  });
+
+  // ウィンドウリサイズ時に上限を超えないよう補正
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 900) applyPanelWidth(cfg.sidePanelWidth || 320);
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
 //  初期化
 // ══════════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
   initMap();
+  setupPanelResizer();
   restoreStoredStrikes();
 
   window.electronAPI.onWsStatus(setBadge);

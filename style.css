@@ -191,13 +191,38 @@ body {
 /* ── サイドパネル ────────────────────────────────────────────── */
 .side-panel {
   width: 320px;
-  min-width: 260px;
+  min-width: 200px;
+  flex: 0 0 auto;   /* リサイザーで指定した幅を維持する */
   background: var(--bg-1);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
+
+/* ── パネル幅リサイザー ──────────────────────────────────────── */
+.panel-resizer {
+  flex: 0 0 6px;
+  cursor: col-resize;
+  background: var(--border);
+  position: relative;
+  z-index: 500;
+  transition: background 0.15s;
+}
+.panel-resizer::before {
+  /* 掴みやすいよう当たり判定を左右に広げる（見た目は細いまま） */
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0;
+  left: -4px; right: -4px;
+}
+.panel-resizer:hover,
+.panel-resizer.dragging {
+  background: var(--accent, #4a9eff);
+}
+/* ドラッグ中は選択・地図操作を止める */
+body.resizing-panel { cursor: col-resize; user-select: none; }
+body.resizing-panel #map { pointer-events: none; }
 
 .panel-section {
   display: flex;
@@ -288,6 +313,22 @@ body {
   font-size: 11px;
   font-weight: 700;
   color: var(--accent);
+}
+
+/* 履歴項目に統合した音波到達情報（旧・地図上の音波到達窓の代替） */
+.history-sound {
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 5px;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+.history-sound:empty { display: none; }
+.history-sound.pending {
+  color: #ff6b35;
+}
+.history-sound.arrived {
+  color: #3ddc84;
 }
 
 /* ── 左側 音波到達パネル ──────────────────────────────────────── */
@@ -613,6 +654,25 @@ body {
   100% { box-shadow: 0 0 0 0 transparent; }
 }
 
+/* 自宅（現在地）の小さな吹き出し */
+.home-tooltip.leaflet-tooltip {
+  background: var(--bg-1);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 2px 7px;
+  font-family: var(--font);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px #0008;
+  opacity: 0.95;
+}
+.home-tooltip.leaflet-tooltip-top::before {
+  border-top-color: var(--accent);
+}
+
 /* Leaflet popup カスタム */
 .leaflet-popup-content-wrapper {
   background: var(--bg-1);
@@ -831,13 +891,16 @@ body {
   }
 
   .side-panel {
-    width: 100%;
+    width: 100% !important;   /* 縦積みでは幅指定を無効化 */
     min-width: 0;
     flex: 0 0 auto;
     max-height: 34vh;      /* 履歴は下部に控えめに */
     border-left: none;
     border-top: 1px solid var(--border);
   }
+
+  /* 縦積みレイアウトでは横幅リサイザーは使わない */
+  .panel-resizer { display: none; }
   .section-title { padding: 9px 12px 7px; }
 
   /* ── 地図上のフローティングUI（狭幅で重ならないよう再配置） ── */

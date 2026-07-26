@@ -62,12 +62,15 @@
         <button class="filter-btn" data-filter="21600">直近6時間</button>
         <button class="filter-btn" data-filter="86400">直近24時間</button>
       </div>
-      <div id="soundPanel" class="sound-arrival-panel"></div>
       <div class="ring-legend">
         <div class="ring-legend-item"><span class="dot dot-warn"></span>音到達前（警告圏内）</div>
         <div class="ring-legend-item"><span class="dot dot-safe"></span>到達済み / 監視圏外</div>
       </div>
     </div>
+
+    <!-- パネル幅リサイズ用ハンドル（ドラッグで履歴パネルの横幅を調整） -->
+    <div class="panel-resizer" id="panelResizer" role="separator" aria-orientation="vertical"
+         title="ドラッグで履歴パネルの幅を調整"></div>
 
     <!-- サイドパネル -->
     <aside class="side-panel">
