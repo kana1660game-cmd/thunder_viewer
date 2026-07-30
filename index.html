@@ -8,9 +8,9 @@
     default-src 'self';
     script-src 'self' https://unpkg.com;
     style-src 'self' https://unpkg.com 'unsafe-inline';
-    img-src 'self' data: blob: https://tile.openstreetmap.org https://unpkg.com;
+    img-src 'self' data: blob: https://tile.openstreetmap.org https://unpkg.com https://www.jma.go.jp;
     media-src 'self' blob:;
-    connect-src 'self' https://nominatim.openstreetmap.org wss://*.blitzortung.org;
+    connect-src 'self' https://nominatim.openstreetmap.org https://www.jma.go.jp wss://*.blitzortung.org;
     worker-src 'self' blob:;
     object-src 'none';
     base-uri 'self';
@@ -35,6 +35,11 @@
       <div class="stat-chip" id="statJapan">🗾 <b>—</b></div>
       <div class="stat-chip" id="statTotal">本日(監視) <b>—</b></div>
       <div class="stat-chip" id="statRecent">直近 <b>—</b></div>
+      <button class="lever-switch" id="leverRain" role="switch" aria-checked="false"
+              title="雨雲：ONで気象庁ナウキャストの雨雲を地図に重ねます">
+        <span class="lever-label">🌧️ 雨雲</span>
+        <span class="lever-track"><span class="lever-knob"></span></span>
+      </button>
       <button class="lever-switch" id="leverCameraLock" role="switch" aria-checked="false"
               title="カメラ固定：ONの間はカメラを自動移動しません">
         <span class="lever-label">カメラ固定</span>

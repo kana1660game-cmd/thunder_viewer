@@ -21,6 +21,8 @@ const DEFAULT_CONFIG = {
   autoCamera: true,
   cameraLock: false,   // ON の間はカメラの自動移動を完全に停止（追従設定より優先）
   cameraFar: false,
+  showRain: false,      // リアルタイム雨雲（気象庁ナウキャスト）を表示するか
+  rainOpacity: 0.55,    // 雨雲レイヤーの不透明度（落雷が見えるよう半透明）
   historyDisplayCount: 50,
   mapDisplaySec: 0,
   mapDisplayCount: 500,
@@ -55,6 +57,10 @@ function hasLocation() {
 let strikes = [];
 let strikeIdSeq = 0;
 let map, canvasRenderer, monitorMarker, soundRingLayer;
+// ── 雨雲レイヤー（気象庁ナウキャスト） ──────────────────────────
+let rainLayer = null;      // 現在表示中の雨雲タイルレイヤー
+let rainTimer = null;      // 5分ごとの自動更新タイマー
+let rainBasetime = null;   // 最後に読み込んだ basetime（無駄な張り替え防止）
 let geocodeCache = loadGeocodeCache();
 let mapFilterSec = 0;
 
@@ -506,6 +512,82 @@ function updateCameraLockLever() {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  リアルタイム雨雲（気象庁 高解像度降水ナウキャスト）
+// ──────────────────────────────────────────────────────────────
+//  ・時刻一覧(JSON)から最新の実況コマを選び、PNGタイルを重ねる。
+//  ・5分ごとに更新。降水のない領域は透過PNGなので地図が透けて見える。
+//  ・専用ペイン(zIndex 250)に敷くため、落雷点・演出より必ず下に描画される。
+// ══════════════════════════════════════════════════════════════
+const RAIN_TIMES_URL = 'https://www.jma.go.jp/bosai/jmatile/data/nowc/targetTimes_N1.json';
+
+// 現在時刻を気象庁タイルのキー形式(UTC, YYYYMMDDHHMMSS)で返す
+function utcTileKeyNow() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return d.getUTCFullYear() + p(d.getUTCMonth() + 1) + p(d.getUTCDate())
+       + p(d.getUTCHours()) + p(d.getUTCMinutes()) + p(d.getUTCSeconds());
+}
+
+// 雨雲レバーの見た目を更新
+function updateRainLever() {
+  const lever = document.getElementById('leverRain');
+  if (!lever) return;
+  lever.classList.toggle('rain-on', !!cfg.showRain);
+  lever.setAttribute('aria-checked', cfg.showRain ? 'true' : 'false');
+  lever.title = cfg.showRain
+    ? '雨雲：ON（気象庁ナウキャストを表示中・5分毎更新）'
+    : '雨雲：OFF（タップで表示）';
+}
+
+// 最新の雨雲タイルを取得してレイヤーを張り替える
+async function refreshRainLayer() {
+  if (!cfg.showRain || !map) return;
+  let times;
+  try {
+    const res = await fetch(RAIN_TIMES_URL, { cache: 'no-store', referrerPolicy: 'no-referrer' });
+    if (!res.ok) return;
+    times = await res.json();
+  } catch { return; }               // 取得失敗時は既存レイヤーを維持
+  if (!Array.isArray(times) || times.length === 0) return;
+
+  // basetime 昇順に整列し、未来コマを除いた最新の実況コマを採用する
+  const sorted = times.slice().sort((a, b) => a.basetime < b.basetime ? -1 : 1);
+  const nowKey = utcTileKeyNow();
+  const latest = sorted.filter(t => t.validtime <= nowKey).pop() || sorted[sorted.length - 1];
+  if (!latest || latest.basetime === rainBasetime) return;  // 変化なしなら張り替えない
+  rainBasetime = latest.basetime;
+
+  const url = `https://www.jma.go.jp/bosai/jmatile/data/nowc/${latest.basetime}/none/${latest.validtime}/surf/hrpns/{z}/{x}/{y}.png`;
+  const next = L.tileLayer(url, {
+    pane: 'rain',
+    opacity: cfg.rainOpacity,
+    tileSize: 256,
+    maxZoom: 18,
+    attribution: '雨雲: 気象庁ナウキャスト',
+  });
+  next.addTo(map);
+
+  // 旧レイヤーは新タイル描画後に少し遅らせて除去（切替時のちらつき防止）
+  const prev = rainLayer;
+  rainLayer = next;
+  if (prev) setTimeout(() => { if (map.hasLayer(prev)) map.removeLayer(prev); }, 600);
+}
+
+// 設定に応じて雨雲レイヤーと自動更新の ON/OFF を反映する
+function updateRainLayer() {
+  if (cfg.showRain) {
+    refreshRainLayer();
+    if (!rainTimer) rainTimer = setInterval(refreshRainLayer, 5 * 60 * 1000);
+  } else {
+    if (rainTimer) { clearInterval(rainTimer); rainTimer = null; }
+    if (rainLayer && map.hasLayer(rainLayer)) map.removeLayer(rainLayer);
+    rainLayer = null;
+    rainBasetime = null;
+  }
+  updateRainLever();
+}
+
+// ══════════════════════════════════════════════════════════════
 //  地図
 // ══════════════════════════════════════════════════════════════
 function initMap() {
@@ -521,6 +603,11 @@ function initMap() {
     maxZoom: 18,
     keepBuffer: 4,
   }).addTo(map);
+  // 雨雲用の専用ペイン：地図タイル(200)より上・落雷点や監視リング(400)より下に敷く。
+  // これで雨雲は地図に半透明でかぶさりつつ、落雷は常に雨雲の上に描画される。
+  map.createPane('rain');
+  map.getPane('rain').style.zIndex = '250';
+  map.getPane('rain').style.pointerEvents = 'none';  // クリックは地図側へ透過
   placeMonitorMarker();
   drawSoundRing();
   map.on('zoomend', placeMonitorMarker);
@@ -1668,6 +1755,15 @@ document.addEventListener('DOMContentLoaded', () => {
     updateCameraLockLever();
   });
   updateCameraLockLever();
+
+  // 雨雲レバー（ON で気象庁ナウキャストの雨雲を地図に重ねる）
+  const leverRain = document.getElementById('leverRain');
+  if (leverRain) leverRain.addEventListener('click', () => {
+    cfg.showRain = !cfg.showRain;
+    saveConfig();
+    updateRainLayer();
+  });
+  updateRainLayer();
 
   // 監視地点が未設定なら、初回起動時に設定モーダルを自動で開いて入力を促す
   if (!hasLocation()) openSettings();

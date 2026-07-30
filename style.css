@@ -139,6 +139,11 @@ body {
 .lever-switch.locked .lever-track { background: #ff6b3544; border-color: var(--accent2); }
 .lever-switch.locked .lever-knob { transform: translateX(18px); background: var(--accent2); }
 
+/* ON（雨雲表示中） */
+.lever-switch.rain-on { color: #4a9eff; border-color: #4a9eff; background: #4a9eff22; }
+.lever-switch.rain-on .lever-track { background: #4a9eff44; border-color: #4a9eff; }
+.lever-switch.rain-on .lever-knob { transform: translateX(18px); background: #4a9eff; }
+
 /* ── メインレイアウト ────────────────────────────────────────── */
 .main-layout {
   display: flex;
