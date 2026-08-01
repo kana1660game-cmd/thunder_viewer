@@ -563,12 +563,10 @@ async function refreshRainLayer() {
     opacity: 1,                // 透過はペインのCSS opacityで表現（タイル個別のフェード競合を避ける）
     tileSize: 256,
     maxZoom: 18,
-    // ── パン/ズーム時に雨雲が一瞬消えるのを防ぐタイル保持設定 ──
-    // 気象庁タイルは OSM より配信が遅いため、標準設定だと新タイル到着前に
-    // 旧タイルが破棄されて空白になる。以下でタイルを長く保持する。
-    keepBuffer: 6,             // 画面外タイルを多めにキャッシュ（パン時の空白防止）
-    updateWhenZooming: false,  // ズームアニメ中は更新せず、確定後にまとめて読み込む
-    updateWhenIdle: false,     // パン中も逐次読み込む
+    // タイル保持は安定動作している OSM レイヤーと同じ設定に揃える。
+    // updateWhenZooming / updateWhenIdle はあえて指定せず Leaflet の
+    // プラットフォーム既定に任せる（モバイルで消える不具合を避けるため）。
+    keepBuffer: 4,
     attribution: '雨雲: 気象庁ナウキャスト',
   });
   next.addTo(map);
