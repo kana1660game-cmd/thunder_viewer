@@ -563,14 +563,30 @@ async function refreshRainLayer() {
     opacity: cfg.rainOpacity,
     tileSize: 256,
     maxZoom: 18,
+    // ── パン/ズーム時に雨雲が一瞬消えるのを防ぐタイル保持設定 ──
+    // 気象庁タイルは OSM より配信が遅いため、標準設定だと新タイル到着前に
+    // 旧タイルが破棄されて空白になる。以下でタイルを長く保持する。
+    keepBuffer: 6,             // 画面外タイルを多めにキャッシュ（パン時の空白防止）
+    updateWhenZooming: false,  // ズームアニメ中は更新せず、確定後にまとめて読み込む
+    updateWhenIdle: false,     // パン中も逐次読み込む
     attribution: '雨雲: 気象庁ナウキャスト',
   });
   next.addTo(map);
 
-  // 旧レイヤーは新タイル描画後に少し遅らせて除去（切替時のちらつき防止）
+  // 旧レイヤーは「新レイヤーの表示タイルが出揃ってから」除去する。
+  // 固定ディレイだと配信が遅いとき切替時に一瞬空白になるため load を待つ。
   const prev = rainLayer;
   rainLayer = next;
-  if (prev) setTimeout(() => { if (map.hasLayer(prev)) map.removeLayer(prev); }, 600);
+  if (prev) {
+    let removed = false;
+    const dropPrev = () => {
+      if (removed) return;
+      removed = true;
+      if (map.hasLayer(prev)) map.removeLayer(prev);
+    };
+    next.once('load', dropPrev);
+    setTimeout(dropPrev, 8000);  // load が発火しない場合のフォールバック
+  }
 }
 
 // 設定に応じて雨雲レイヤーと自動更新の ON/OFF を反映する
