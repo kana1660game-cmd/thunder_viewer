@@ -1411,6 +1411,10 @@ const AR = {
 // 水平・垂直の視野角（一般的なスマホ背面カメラの近似値）
 const AR_HFOV = 65;   // 度
 const AR_VFOV = 50;   // 度
+// 方位補正（度）。背面カメラARでは端末/ブラウザによって報告される方位が
+// カメラの向きと正反対（180°ズレ）になることがあるため補正する。
+// 実機確認の結果、雷が正反対の方角に表示されていたため 180 を採用。
+const AR_HEADING_OFFSET = 180;
 // AR に出す落雷の条件
 const AR_MAX_AGE_MS = 15 * 60 * 1000;  // 直近15分
 const AR_MAX_COUNT  = 60;
@@ -1511,7 +1515,8 @@ function onDeviceOrientation(e) {
   if (heading !== null) {
     // 画面の回転（横持ち等）を補正
     const scr = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
-    AR.heading = (heading + scr + 360) % 360;
+    // AR_HEADING_OFFSET(=180) で、方位が正反対に報告される端末を補正する
+    AR.heading = (heading + scr + AR_HEADING_OFFSET + 360) % 360;
   }
   if (typeof e.beta === 'number') AR.pitch = e.beta;   // 直立で約90°
 }
