@@ -560,7 +560,7 @@ async function refreshRainLayer() {
   const url = `https://www.jma.go.jp/bosai/jmatile/data/nowc/${latest.basetime}/none/${latest.validtime}/surf/hrpns/{z}/{x}/{y}.png`;
   const next = L.tileLayer(url, {
     pane: 'rain',
-    opacity: cfg.rainOpacity,
+    opacity: 1,                // 透過はペインのCSS opacityで表現（タイル個別のフェード競合を避ける）
     tileSize: 256,
     maxZoom: 18,
     // ── パン/ズーム時に雨雲が一瞬消えるのを防ぐタイル保持設定 ──
@@ -624,6 +624,10 @@ function initMap() {
   map.createPane('rain');
   map.getPane('rain').style.zIndex = '250';
   map.getPane('rain').style.pointerEvents = 'none';  // クリックは地図側へ透過
+  // 半透明は「ペイン全体のCSS opacity」で表現する。
+  // タイル個別に opacity(<1) を持たせると、Leaflet のフェードイン処理と競合して
+  // 操作時にタイルが低opacityのまま取り残される（＝たまに消える）ため。
+  map.getPane('rain').style.opacity = String(cfg.rainOpacity);
   placeMonitorMarker();
   drawSoundRing();
   map.on('zoomend', placeMonitorMarker);
