@@ -559,17 +559,22 @@ async function refreshRainLayer() {
 
   const url = `https://www.jma.go.jp/bosai/jmatile/data/nowc/${latest.basetime}/none/${latest.validtime}/surf/hrpns/{z}/{x}/{y}.png`;
   const next = L.tileLayer(url, {
-    pane: 'rain',
-    opacity: 1,                // 透過はペインのCSS opacityで表現（タイル個別のフェード競合を避ける）
+    // OSM と同じ tilePane に載せ、zIndex で OSM(既定) より上・落雷より下にする。
+    zIndex: 5,
+    opacity: 1,                // 透過はレイヤーのコンテナ CSS opacity で表現（タイル個別のフェード競合を避ける）
     tileSize: 256,
     maxZoom: 18,
-    // タイル保持は安定動作している OSM レイヤーと同じ設定に揃える。
-    // updateWhenZooming / updateWhenIdle はあえて指定せず Leaflet の
-    // プラットフォーム既定に任せる（モバイルで消える不具合を避けるため）。
-    keepBuffer: 4,
+    keepBuffer: 4,             // 安定動作している OSM と同じ設定に揃える
     attribution: '雨雲: 気象庁ナウキャスト',
   });
   next.addTo(map);
+  // 半透明はレイヤー全体（コンテナ要素）にかける。タイル個別の opacity(<1) は
+  // Leaflet のフェード処理と競合してタイルが消える原因になるため使わない。
+  const el = next.getContainer();
+  if (el) {
+    el.style.opacity = String(cfg.rainOpacity);
+    el.style.pointerEvents = 'none';  // クリックは地図側へ透過
+  }
 
   // 旧レイヤーは「新レイヤーの表示タイルが出揃ってから」除去する。
   // 固定ディレイだと配信が遅いとき切替時に一瞬空白になるため load を待つ。
@@ -617,15 +622,10 @@ function initMap() {
     maxZoom: 18,
     keepBuffer: 4,
   }).addTo(map);
-  // 雨雲用の専用ペイン：地図タイル(200)より上・落雷点や監視リング(400)より下に敷く。
-  // これで雨雲は地図に半透明でかぶさりつつ、落雷は常に雨雲の上に描画される。
-  map.createPane('rain');
-  map.getPane('rain').style.zIndex = '250';
-  map.getPane('rain').style.pointerEvents = 'none';  // クリックは地図側へ透過
-  // 半透明は「ペイン全体のCSS opacity」で表現する。
-  // タイル個別に opacity(<1) を持たせると、Leaflet のフェードイン処理と競合して
-  // 操作時にタイルが低opacityのまま取り残される（＝たまに消える）ため。
-  map.getPane('rain').style.opacity = String(cfg.rainOpacity);
+  // 雨雲は OSM と同じ tilePane に載せる（refreshRainLayer で zIndex を OSM より上に設定）。
+  // 専用ペインに載せるとズームアニメーション時にタイルが消える不具合があるため、
+  // 落雷(overlayPane z400 / canvas z450)より下・OSM の上、という重なりは
+  // tilePane 内の zIndex で担保する。
   placeMonitorMarker();
   drawSoundRing();
   map.on('zoomend', placeMonitorMarker);
