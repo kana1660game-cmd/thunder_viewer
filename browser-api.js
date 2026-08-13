@@ -119,6 +119,13 @@
   const geocodeQueue = [];
   let geocodeRunning = false;
 
+  // キューの上限。1.1 秒に 1 件しか処理できないため、雷雨時に要求が届く速度が
+  // 処理速度を上回るとキューが際限なく伸び、未解決の Promise とそれが掴む
+  // 落雷オブジェクトがメモリに積み上がっていく（長時間の稼働で重くなる原因）。
+  // 溢れた古い要求は待たせ続けず打ち切る。dropped 印を付けて返すので、
+  // 呼び出し側はその結果をキャッシュせず、次の落雷で取得し直せる。
+  const GEOCODE_QUEUE_MAX = 40;
+
   function processGeocodeQueue() {
     if (geocodeRunning || geocodeQueue.length === 0) return;
     geocodeRunning = true;
@@ -147,6 +154,10 @@
     onWsStatus: (cb) => { handlers.status.push(cb); },
     onWsStats:  (cb) => { handlers.stats.push(cb); },
     reverseGeocode: (lat, lon) => new Promise((resolve) => {
+      while (geocodeQueue.length >= GEOCODE_QUEUE_MAX) {
+        const dropped = geocodeQueue.shift();
+        dropped.resolve({ place: '不明', pref: '', country: '', dropped: true });
+      }
       geocodeQueue.push({ lat, lon, resolve });
       processGeocodeQueue();
     }),

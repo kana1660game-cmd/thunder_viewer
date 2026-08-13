@@ -176,10 +176,29 @@ function loadHome() {
   return null;
 }
 
+// 逆ジオコーディング結果のキャッシュ上限。以前はメモリ上のキャッシュを一切
+// 間引かず（保存時に末尾300件へ絞るだけだった）、長時間の稼働で数千〜数万件まで
+// 膨らみ、1件追加するたびに全件を配列化・JSON 化していた。
+const GEOCACHE_MAX = 300;
+
+// キャッシュに登録し、上限を超えた古いものから捨てる
+function putGeocode(key, val) {
+  geocodeCache[key] = val;
+  const keys = Object.keys(geocodeCache);   // 文字列キーは挿入順
+  for (let i = 0; i < keys.length - GEOCACHE_MAX; i++) delete geocodeCache[keys[i]];
+  scheduleSaveGeocodeCache();
+}
+
+// localStorage への書き込みは同期処理なので、受信のたびには行わずまとめる
+let _geoSavePending = null;
+function scheduleSaveGeocodeCache() {
+  clearTimeout(_geoSavePending);
+  _geoSavePending = setTimeout(saveGeocodeCache, 2000);
+}
+
 function saveGeocodeCache() {
   try {
-    const entries = Object.entries(geocodeCache);
-    localStorage.setItem('lm_geocache', JSON.stringify(Object.fromEntries(entries.slice(-300))));
+    localStorage.setItem('lm_geocache', JSON.stringify(geocodeCache));
   } catch {}
 }
 function loadGeocodeCache() {
@@ -374,9 +393,10 @@ async function addLiveStrike({ lat, lon, timeMs, dist }) {
       strike.place = geocodeCache[key].place;
       strike.pref  = geocodeCache[key].pref;
     } else {
-      const result = await window.electronAPI.reverseGeocode(lat, lon);
-      geocodeCache[key] = result;
-      saveGeocodeCache();
+      const result = await reverseGeocodeShared(key, lat, lon);
+      // 混雑で打ち切られた要求はキャッシュしない（その地点を恒久的に
+      // 「不明」で固定してしまわないよう、次の落雷で再取得させる）
+      if (!result.dropped) putGeocode(key, result);
       strike.place = result.place;
       strike.pref  = result.pref;
       if (strike.mapLayer) strike.mapLayer.setPopupContent(buildPopupHTML(strike));
@@ -385,6 +405,20 @@ async function addLiveStrike({ lat, lon, timeMs, dist }) {
     renderHistoryDebounced();
     scheduleSoundPanel();
   }
+}
+
+// 同じ地点への逆ジオコーディング要求をひとつにまとめる。
+// Nominatim は 1 リクエスト/秒しか叩けないため、同じ場所に落雷が連続すると
+// 内容の同じ要求がキューに積み上がり、全体の解決が遅れていた。
+const _geoInflight = new Map();   // geoKey -> Promise
+function reverseGeocodeShared(key, lat, lon) {
+  let p = _geoInflight.get(key);
+  if (!p) {
+    p = window.electronAPI.reverseGeocode(lat, lon);
+    _geoInflight.set(key, p);
+    p.then(() => _geoInflight.delete(key), () => _geoInflight.delete(key));
+  }
+  return p;
 }
 
 function pushStrike(strike) {
@@ -667,12 +701,39 @@ function setupManualInteractionTracking() {
   container.addEventListener('keydown', mark);               // 矢印キーでのパン
 }
 
+// 監視地点マーカーの再生成条件（位置・名前）。ズームでは作り直さない
+let _monitorMarkerKey = null;
+
 function placeMonitorMarker() {
-  if (monitorMarker) { map.removeLayer(monitorMarker); monitorMarker = null; }
-  if (!hasLocation()) return;   // 監視地点未設定ならマーカーを置かない
+  if (!hasLocation()) {         // 監視地点未設定ならマーカーを置かない
+    if (monitorMarker) { map.removeLayer(monitorMarker); monitorMarker = null; }
+    _monitorMarkerKey = null;
+    return;
+  }
   const zoom = map ? map.getZoom() : 8;
   const size = Math.max(8, Math.min(24, Math.round(zoom * 2)));
   const half = Math.round(size / 2);
+  const key = `${cfg.lat},${cfg.lon},${cfg.name}`;
+
+  // この関数は zoomend のたびに呼ばれる。毎回マーカーとツールチップを作り直すと
+  // 1 回あたり 2〜3ms かかり、ズーム処理全体の 4 割ほどを占めていた。
+  // 位置・名前が変わっていなければ、サイズだけ書き換えて使い回す。
+  if (monitorMarker && _monitorMarkerKey === key) {
+    const el = monitorMarker.getElement();
+    if (el) {
+      el.style.width  = size + 'px';
+      el.style.height = size + 'px';
+      el.style.marginLeft = -half + 'px';
+      el.style.marginTop  = -half + 'px';
+      const pulse = el.firstElementChild;
+      if (pulse) { pulse.style.width = size + 'px'; pulse.style.height = size + 'px'; }
+    }
+    const tip = monitorMarker.getTooltip();
+    if (tip) tip.options.offset = [0, -half - 2];
+    return;
+  }
+
+  if (monitorMarker) { map.removeLayer(monitorMarker); monitorMarker = null; }
   const icon = L.divIcon({
     className: 'monitor-marker',
     html: `<div class="monitor-pulse" style="width:${size}px;height:${size}px"></div>`,
@@ -689,6 +750,7 @@ function placeMonitorMarker() {
     offset: [0, -half - 2],
     className: 'home-tooltip',
   });
+  _monitorMarkerKey = key;
 }
 
 function drawSoundRing() {
@@ -702,6 +764,10 @@ function drawSoundRing() {
 }
 
 function removeStrikeFromMap(strike) {
+  // フェード待ち・フェード中の登録も一緒に解除する（残しても実害はないが、
+  // 履歴から溢れた落雷を最大3分ぶん抱え続けることになるため）
+  _fadePending.delete(strike.id);
+  _fadeActive.delete(strike.id);
   if (strike.mapLayer) {
     if (map && map.hasLayer(strike.mapLayer)) map.removeLayer(strike.mapLayer);
     strike.mapLayer = null;
@@ -1004,27 +1070,48 @@ function animationTick(timestamp) {
   rafId = activeRings.size > 0 ? requestAnimationFrame(animationTick) : null;
 }
 
+// ── マーカーのフェードアウト ──────────────────────────────────
+// 落雷ごとに setTimeout + 専用の requestAnimationFrame ループを立てていたため、
+// 雷雨時には数百本の RAF ループが並走してメインスレッドを圧迫していた。
+// 待機は 1 秒間隔の定期処理でまとめ、実際のフェードは単一ループで処理する。
+const _fadePending = new Map();   // strike.id -> { strike, startAt }
+const _fadeActive  = new Map();   // strike.id -> { strike, op, lastStep }
+let _fadeRafId = null;
+const FADE_STEP_MS  = 120;    // 濃度を1段下げる間隔
+const FADE_DELTA    = 0.025;  // 1段あたりの減少量
+const FADE_START_OP = 0.4;    // フェード開始時の不透明度
+
 function scheduleFadeOut(strike, delay) {
-  setTimeout(() => {
-    if (!strike.mapLayer) return;
-    let op = 0.4;
-    let lastFadeTs = 0;
-    const fadeStep = (ts) => {
-      if (!strike.mapLayer) return;
-      if (ts - lastFadeTs >= 120) {
-        lastFadeTs = ts;
-        op -= 0.025;
-        if (op <= 0) {
-          if (map.hasLayer(strike.mapLayer)) map.removeLayer(strike.mapLayer);
-          strike.mapLayer = null;
-          return;
-        }
-        strike.mapLayer.setStyle({ opacity: op, fillOpacity: op * 0.65 });
-      }
-      requestAnimationFrame(fadeStep);
-    };
-    requestAnimationFrame(fadeStep);
-  }, delay);
+  _fadePending.set(strike.id, { strike, startAt: Date.now() + delay });
+}
+
+// 待機時間が過ぎたものをフェード中に移す（1秒ごとの定期処理から呼ぶ）
+function promoteFades() {
+  const now = Date.now();
+  for (const [id, f] of _fadePending) {
+    if (now < f.startAt) continue;
+    _fadePending.delete(id);
+    if (!f.strike.mapLayer) continue;       // 既に地図から消えていれば何もしない
+    _fadeActive.set(id, { strike: f.strike, op: FADE_START_OP, lastStep: 0 });
+  }
+  if (_fadeActive.size > 0 && !_fadeRafId) _fadeRafId = requestAnimationFrame(fadeTick);
+}
+
+function fadeTick(ts) {
+  for (const [id, f] of _fadeActive) {
+    if (!f.strike.mapLayer) { _fadeActive.delete(id); continue; }
+    if (ts - f.lastStep < FADE_STEP_MS) continue;
+    f.lastStep = ts;
+    f.op -= FADE_DELTA;
+    if (f.op <= 0) {
+      if (map.hasLayer(f.strike.mapLayer)) map.removeLayer(f.strike.mapLayer);
+      f.strike.mapLayer = null;
+      _fadeActive.delete(id);
+      continue;
+    }
+    f.strike.mapLayer.setStyle({ opacity: f.op, fillOpacity: f.op * 0.65 });
+  }
+  _fadeRafId = _fadeActive.size > 0 ? requestAnimationFrame(fadeTick) : null;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1091,16 +1178,103 @@ setInterval(() => {
 // ══════════════════════════════════════════════════════════════
 //  履歴 UI
 // ══════════════════════════════════════════════════════════════
-let _knownIds = new Set();
+// 履歴項目の DOM は落雷ごとに使い回す。
+// 以前は落雷を 1 件受信するたびに 50 項目を innerHTML で作り直し、click ハンドラも
+// 貼り直していた。この再構築だけで 16〜30ms（実測）かかり、毎秒＋受信ごとに走るため
+// 地図のドラッグ・ズーム中に割り込んでカクつきの原因になっていた。
+// 現在は「増えた項目を作る／消えた項目を外す」差分だけを DOM に反映する。
+const _historyNodes = new Map();   // strike.id -> { el, placeEl, soundEl, strike, placeText }
 let _historyDebounce = null;
+let _historyClickBound = false;
+let _historyEmptyShown = false;
 
 function renderHistoryDebounced() {
   clearTimeout(_historyDebounce);
   _historyDebounce = setTimeout(renderHistory, 200);
 }
 
+// 履歴1件ぶんの DOM を組み立てる。地名以外は落雷ごとに不変なので、
+// 生成は 1 回きりで以後は使い回す。
+function buildHistoryItem(s) {
+  const el = document.createElement('div');
+  el.className = 'history-item ' + (s.isFar ? 'far' : (s.isWarn ? 'warn' : 'safe')) + ' new-item';
+  el.dataset.id = String(s.id);
+
+  const num = document.createElement('div');
+  num.className = 'history-num';
+  num.textContent = `#${s.id} `;
+  if (s.isHistorical) {
+    const b = document.createElement('span');
+    b.className = 'hist-badge';
+    b.textContent = '履歴';
+    num.appendChild(b);
+  }
+  if (s.isFar) {
+    const b = document.createElement('span');
+    b.className = 'hist-badge far-badge';
+    b.textContent = '圏外';
+    num.appendChild(b);
+  }
+
+  const placeEl = document.createElement('div');
+  placeEl.className = 'history-place';
+
+  const coords = document.createElement('div');
+  coords.className = 'history-coords';
+  coords.textContent = `${s.lat.toFixed(4)}°N  ${s.lon.toFixed(4)}°E`;
+
+  const timeRow = document.createElement('div');
+  timeRow.className = 'history-time-row';
+  const time = document.createElement('span');
+  time.className = 'history-time';
+  time.textContent = `🕐 ${fmtDateTime(s.strikeTime)}`;
+  const dist = document.createElement('span');
+  dist.className = 'history-dist';
+  dist.textContent = `${s.dist.toFixed(1)} km`;
+  timeRow.appendChild(time);
+  timeRow.appendChild(dist);
+
+  el.appendChild(num);
+  el.appendChild(placeEl);
+  el.appendChild(coords);
+  el.appendChild(timeRow);
+
+  let soundEl = null;
+  if (!s.isFar) {                       // 音波到達行は監視圏内のみ
+    soundEl = document.createElement('div');
+    soundEl.className = 'history-sound';
+    el.appendChild(soundEl);
+  }
+  return { el, placeEl, soundEl, strike: s, placeText: null };
+}
+
+// 地名は逆ジオコーディング完了後に変わるので、変化したときだけ書き換える。
+// 外部由来の文字列なので textContent で安全に描画する。
+function syncHistoryPlace(node) {
+  const s = node.strike;
+  const text = '⚡ ' + (s.place || `${s.lat.toFixed(3)}°N, ${s.lon.toFixed(3)}°E`)
+             + (s.pref ? ' · ' + s.pref : '');
+  if (node.placeText === text) return;
+  node.placeText = text;
+  node.placeEl.textContent = text;
+}
+
+function onHistoryClick(e) {
+  const item = e.target.closest('.history-item');
+  if (!item) return;
+  const node = _historyNodes.get(parseInt(item.dataset.id));
+  const s = node && node.strike;
+  if (!s) return;
+  map.flyTo([s.lat, s.lon], 10, { duration: 1 });
+  if (s.mapLayer) {
+    if (!map.hasLayer(s.mapLayer)) s.mapLayer.addTo(map);
+    s.mapLayer.openPopup();
+  }
+}
+
 function renderHistory() {
   const list = document.getElementById('historyList');
+  if (!list) return;
   const limit = Math.max(1, cfg.historyDisplayCount || 50);
   const near = strikes.filter(s => !s.isFar);
 
@@ -1112,53 +1286,44 @@ function renderHistory() {
   const extraProtected = near.filter(s => protectedIds.has(s.id) && !regularIds.has(s.id));
   const visibleStrikes = [...regular, ...extraProtected];
 
-  if (visibleStrikes.length === 0) {
-    list.innerHTML = '<div class="history-empty">データ待機中...</div>';
-    _knownIds.clear();
-    return;
+  // クリックは親要素へ委譲する（項目ごとに addEventListener しない）
+  if (!_historyClickBound) {
+    list.addEventListener('click', onHistoryClick);
+    _historyClickBound = true;
   }
 
-  const newIds = new Set(visibleStrikes.map(s => s.id));
-  const needRebuild = visibleStrikes.some(s => !_knownIds.has(s.id)) ||
-                      [..._knownIds].some(id => !newIds.has(id));
-  if (!needRebuild) return;
+  if (visibleStrikes.length === 0) {
+    if (!_historyEmptyShown) {
+      list.textContent = '';
+      const empty = document.createElement('div');
+      empty.className = 'history-empty';
+      empty.textContent = 'データ待機中...';
+      list.appendChild(empty);
+      _historyEmptyShown = true;
+    }
+    _historyNodes.clear();
+    return;
+  }
+  if (_historyEmptyShown) { list.textContent = ''; _historyEmptyShown = false; }
 
-  const scrollTop = list.scrollTop;
-  list.innerHTML = visibleStrikes.map(s => {
-    const isNew = !_knownIds.has(s.id);
-    const histBadge = s.isHistorical ? '<span class="hist-badge">履歴</span>' : '';
-    const farBadge  = s.isFar        ? '<span class="hist-badge far-badge">圏外</span>' : '';
-    const itemClass = s.isFar ? 'far' : (s.isWarn ? 'warn' : 'safe');
-    const placeName = s.place || `${s.lat.toFixed(3)}°N, ${s.lon.toFixed(3)}°E`;
-    return `
-      <div class="history-item ${itemClass}${isNew ? ' new-item' : ''}" data-id="${s.id}">
-        <div class="history-num">#${s.id} ${histBadge}${farBadge}</div>
-        <div class="history-place">⚡ ${placeName}${s.pref ? ' · ' + s.pref : ''}</div>
-        <div class="history-coords">${s.lat.toFixed(4)}°N &nbsp;${s.lon.toFixed(4)}°E</div>
-        <div class="history-time-row">
-          <span class="history-time">🕐 ${fmtDateTime(s.strikeTime)}</span>
-          <span class="history-dist">${s.dist.toFixed(1)} km</span>
-        </div>
-        ${!s.isFar ? `<div class="history-sound" data-sound="${s.id}"></div>` : ''}
-      </div>`;
-  }).join('');
+  // 表示対象から外れた項目を DOM から取り除く
+  const wantedIds = new Set(visibleStrikes.map(s => s.id));
+  for (const [id, node] of _historyNodes) {
+    if (!wantedIds.has(id)) { node.el.remove(); _historyNodes.delete(id); }
+  }
 
-  list.querySelectorAll('.history-item').forEach(el => {
-    el.addEventListener('click', () => {
-      const s = strikes.find(x => x.id === parseInt(el.dataset.id));
-      if (!s) return;
-      map.flyTo([s.lat, s.lon], 10, { duration: 1 });
-      if (s.mapLayer) {
-        if (!map.hasLayer(s.mapLayer)) s.mapLayer.addTo(map);
-        s.mapLayer.openPopup();
-      }
-    });
-  });
+  // 期待する並び順に合わせて挿入する。既に正しい位置にある項目は触らないので、
+  // 新着が 1 件だけなら DOM 操作も 1 回だけで済む。
+  let ref = list.firstElementChild;
+  for (const s of visibleStrikes) {
+    let node = _historyNodes.get(s.id);
+    if (!node) { node = buildHistoryItem(s); _historyNodes.set(s.id, node); }
+    syncHistoryPlace(node);
+    if (node.el === ref) ref = ref.nextElementSibling;
+    else list.insertBefore(node.el, ref);
+  }
 
-  _knownIds = newIds;
-  list.scrollTop = scrollTop;
-
-  // 再構築直後に音波到達情報を即時反映（毎秒更新を待たない）
+  // 反映直後に音波到達情報を即時更新（毎秒更新を待たない）
   updateSoundPanel();
 }
 
@@ -1169,20 +1334,18 @@ function renderHistory() {
 // （旧・地図上のフローティング「音波到達」窓を廃止し、右の履歴に統合した）
 // 履歴の全面再構築はせず、該当項目の .history-sound だけを毎秒書き換える。
 function updateSoundPanel() {
-  const list = document.getElementById('historyList');
-  if (!list) return;
   const now = Date.now();
-  const nodes = list.querySelectorAll('.history-sound');
-  for (const el of nodes) {
-    const id = parseInt(el.dataset.sound);
-    const s = strikes.find(x => x.id === id);
-    if (!s || s.isFar) { el.textContent = ''; el.className = 'history-sound'; continue; }
+  // 履歴ノードから直接たどる（DOM 走査と strikes の線形探索を省く）
+  for (const node of _historyNodes.values()) {
+    const el = node.soundEl;
+    if (!el) continue;                  // 圏外項目には音波行が無い
+    const s = node.strike;
 
     const arrivalMs = s.timeMs + s.soundSec * 1000;
     const remSec = (arrivalMs - now) / 1000;
     // 到達前、または到達から90秒以内のものだけ表示する（それ以外は消す）
     const active = remSec > 0 || (now - arrivalMs) < 90000;
-    if (!active) { el.textContent = ''; el.className = 'history-sound'; continue; }
+    if (!active) { setSoundRow(el, '', 'history-sound'); continue; }
 
     let countdown, state;
     if (remSec <= 0) {
@@ -1200,15 +1363,22 @@ function updateSoundPanel() {
     const db = calcThunderDb(s.dist);
     const vol = s.isWarn ? `　📢 ${db.toFixed(0)}dB ${dbToLabel(db)}` : '';
     // 外部由来の地名等は含まないため textContent で安全に描画
-    el.textContent = countdown + vol;
-    el.className = 'history-sound ' + state;
+    setSoundRow(el, countdown + vol, 'history-sound ' + state);
   }
+}
+
+// 音波行の書き換え。値が変わらないときは DOM に触らない
+// （毎秒 50 項目を無条件に書き換えると、そのぶんスタイル再計算が走る）。
+function setSoundRow(el, text, cls) {
+  if (el._txt !== text) { el.textContent = text; el._txt = text; }
+  if (el._cls !== cls)  { el.className = cls;    el._cls = cls; }
 }
 
 setInterval(() => {
   renderHistory();
   updateSoundPanel();
   checkUrgentCamera();
+  promoteFades();
 }, 1000);
 
 // ══════════════════════════════════════════════════════════════
