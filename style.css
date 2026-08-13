@@ -164,8 +164,11 @@ body {
   background: #080c18;
 }
 
-/* Leafletタイルを暗くする */
-.leaflet-tile-pane { filter: brightness(0.4) saturate(0.5) hue-rotate(190deg); }
+/* ベースマップ（OSM）だけを暗く着色する。
+   雨雲タイルも同じ .leaflet-tile-pane に載るため、ペイン全体に filter を
+   かけると雨雲の色まで変化してしまう（青系の降水が反転して見える）。
+   そのため OSM レイヤーのコンテナ（className: basemap-dark）に限定する。 */
+.leaflet-tile-pane .basemap-dark { filter: brightness(0.4) saturate(0.5) hue-rotate(190deg); }
 
 /* 落雷マーカー（SVG circle として描画） */
 .lightning-marker {

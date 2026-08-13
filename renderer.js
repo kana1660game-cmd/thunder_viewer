@@ -516,9 +516,30 @@ function updateCameraLockLever() {
 // ──────────────────────────────────────────────────────────────
 //  ・時刻一覧(JSON)から最新の実況コマを選び、PNGタイルを重ねる。
 //  ・5分ごとに更新。降水のない領域は透過PNGなので地図が透けて見える。
-//  ・専用ペイン(zIndex 250)に敷くため、落雷点・演出より必ず下に描画される。
+//  ・OSM と同じ tilePane に zIndex 5 で載せる（OSM の上・落雷レイヤーの下）。
 // ══════════════════════════════════════════════════════════════
 const RAIN_TIMES_URL = 'https://www.jma.go.jp/bosai/jmatile/data/nowc/targetTimes_N1.json';
+
+// 気象庁ナウキャストのタイルは「偶数ズーム、かつ z10 まで」しか配信されていない。
+// 奇数ズームや z11 以上を要求すると、404 ではなく 200 応答で中身が空の透過 PNG
+// （約 334 バイト）が返るため、読み込みエラーとして検知できないまま雨雲だけが
+// 消えたように見える。1 段ズームするたびに表示/非表示が入れ替わるのはこのため。
+const RAIN_NATIVE_ZOOM_MIN = 4;
+const RAIN_NATIVE_ZOOM_MAX = 10;
+
+// タイルを取りに行くズームを「偶数かつ 4〜10」に丸める TileLayer。
+// Leaflet は _clampZoom が返したズームでタイル座標系を組み立て、地図ズームとの
+// 差はレイヤー全体の transform scale で吸収する（maxNativeZoom と同じ仕組み）。
+// これにより配信のないズームでも、直近の配信ズームのタイルを拡大して表示できる。
+const RainTileLayer = L.TileLayer.extend({
+  _clampZoom: function (zoom) {
+    let z = Math.floor(zoom);
+    if (z > RAIN_NATIVE_ZOOM_MAX) z = RAIN_NATIVE_ZOOM_MAX;
+    if (z % 2 !== 0) z -= 1;                       // 奇数ズームは配信が無い
+    if (z < RAIN_NATIVE_ZOOM_MIN) z = RAIN_NATIVE_ZOOM_MIN;
+    return z;
+  },
+});
 
 // 現在時刻を気象庁タイルのキー形式(UTC, YYYYMMDDHHMMSS)で返す
 function utcTileKeyNow() {
@@ -558,23 +579,21 @@ async function refreshRainLayer() {
   rainBasetime = latest.basetime;
 
   const url = `https://www.jma.go.jp/bosai/jmatile/data/nowc/${latest.basetime}/none/${latest.validtime}/surf/hrpns/{z}/{x}/{y}.png`;
-  const next = L.tileLayer(url, {
+  const next = new RainTileLayer(url, {
     // OSM と同じ tilePane に載せ、zIndex で OSM(既定) より上・落雷より下にする。
     zIndex: 5,
-    opacity: 1,                // 透過はレイヤーのコンテナ CSS opacity で表現（タイル個別のフェード競合を避ける）
+    // 半透明はレイヤーのコンテナに適用される（Leaflet がタイル個別のフェードとは
+    // 別に管理する）。手で container.style.opacity を書くと、タイル読み込みの
+    // たびに Leaflet の _updateOpacity が options.opacity で上書きしてしまう。
+    opacity: cfg.rainOpacity,
     tileSize: 256,
     maxZoom: 18,
     keepBuffer: 4,             // 安定動作している OSM と同じ設定に揃える
     attribution: '雨雲: 気象庁ナウキャスト',
   });
   next.addTo(map);
-  // 半透明はレイヤー全体（コンテナ要素）にかける。タイル個別の opacity(<1) は
-  // Leaflet のフェード処理と競合してタイルが消える原因になるため使わない。
   const el = next.getContainer();
-  if (el) {
-    el.style.opacity = String(cfg.rainOpacity);
-    el.style.pointerEvents = 'none';  // クリックは地図側へ透過
-  }
+  if (el) el.style.pointerEvents = 'none';  // クリックは地図側へ透過
 
   // 旧レイヤーは「新レイヤーの表示タイルが出揃ってから」除去する。
   // 固定ディレイだと配信が遅いとき切替時に一瞬空白になるため load を待つ。
@@ -621,6 +640,9 @@ function initMap() {
     attribution: '© OpenStreetMap contributors',
     maxZoom: 18,
     keepBuffer: 4,
+    // 暗色化フィルタはこのクラス経由でベースマップにだけ効かせる。
+    // （ペイン全体にかけると雨雲タイルの色まで変わってしまうため）
+    className: 'basemap-dark',
   }).addTo(map);
   // 雨雲は OSM と同じ tilePane に載せる（refreshRainLayer で zIndex を OSM より上に設定）。
   // 専用ペインに載せるとズームアニメーション時にタイルが消える不具合があるため、
